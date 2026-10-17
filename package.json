@@ -20,7 +20,8 @@
     "test:cov": "vitest run --coverage",
     "test:debug": "vitest --inspect-brk --no-file-parallelism",
     "test:e2e": "vitest run --config ./vitest.config.e2e.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "prepare": "husky"
   },
   "dependencies": {
     "@nestjs/common": "^12.0.1",
@@ -38,6 +39,8 @@
     "@types/node": "^24.0.0",
     "@types/supertest": "^7.0.0",
     "@vitest/coverage-v8": "^4.1.2",
+    "husky": "9.1.7",
+    "lint-staged": "17.6.0",
     "oxfmt": "0.73.0",
     "oxlint": "^1.58.0",
     "oxlint-tsgolint": "^7.0.2001",
@@ -47,5 +50,11 @@
     "vite": "^8.0.0",
     "vitest": "^4.1.2"
   },
-  "packageManager": "pnpm@12.14.0"
+  "packageManager": "pnpm@12.14.0",
+  "lint-staged": {
+    "*.ts": [
+      "oxlint --type-aware --fix",
+      "oxfmt"
+    ]
+  }
 }
