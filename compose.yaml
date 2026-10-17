@@ -1,0 +1,19 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: fastbreak
+      POSTGRES_PASSWORD: fastbreak
+      POSTGRES_DB: fastbreak
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7.4-alpine
+    ports:
+      - '6379:6379'
+
+volumes:
+  postgres-data:
