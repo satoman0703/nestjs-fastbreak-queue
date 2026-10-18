@@ -1,5 +1,11 @@
 {
   "singleQuote": true,
   "trailingComma": "all",
-  "ignorePatterns": ["docs/**", "dist/**", "coverage/**", "**/package.json"]
+  "ignorePatterns": [
+    "docs/**",
+    "dist/**",
+    "coverage/**",
+    "**/package.json",
+    "src/generated/**"
+  ]
 }

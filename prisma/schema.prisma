@@ -1,0 +1,74 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+/// balldontlie のチーム。id は balldontlie の team id をそのまま使う
+model Team {
+  id           Int    @id
+  abbreviation String
+  fullName     String
+  conference   String
+  division     String
+
+  homeGames    Game[] @relation("HomeTeam")
+  visitorGames Game[] @relation("VisitorTeam")
+}
+
+/// balldontlie の試合。id は balldontlie の game id をそのまま使い、再取り込みしても重複させない
+model Game {
+  id            Int      @id
+  season        Int
+  date          DateTime @db.Date
+  postseason    Boolean
+  status        String
+  homeTeamId    Int
+  visitorTeamId Int
+  homeScore     Int
+  visitorScore  Int
+  homeQ1        Int?
+  homeQ2        Int?
+  homeQ3        Int?
+  homeQ4        Int?
+  homeOt1       Int?
+  homeOt2       Int?
+  homeOt3       Int?
+  visitorQ1     Int?
+  visitorQ2     Int?
+  visitorQ3     Int?
+  visitorQ4     Int?
+  visitorOt1    Int?
+  visitorOt2    Int?
+  visitorOt3    Int?
+
+  homeTeam    Team @relation("HomeTeam", fields: [homeTeamId], references: [id])
+  visitorTeam Team @relation("VisitorTeam", fields: [visitorTeamId], references: [id])
+
+  @@index([season])
+}
+
+enum IngestionStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+/// 取り込みジョブの状態。キューとは別に DB に持ち、API から進捗と結果を返せるようにする
+model Ingestion {
+  id           String          @id @default(uuid())
+  season       Int
+  status       IngestionStatus @default(PENDING)
+  gamesFetched Int             @default(0)
+  error        String?
+  /// worker が処理を始めた時刻。createdAt との差がキューでの待ち時間になる
+  startedAt    DateTime?
+  /// COMPLETED / FAILED になった時刻。startedAt との差が処理時間になる
+  finishedAt   DateTime?
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+}
