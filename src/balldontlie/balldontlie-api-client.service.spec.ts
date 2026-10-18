@@ -1,4 +1,4 @@
-import { BalldontlieApiClient } from './balldontlie-api-client.service.js';
+import { BalldontlieApiClient, BalldontlieApiError } from './balldontlie-api-client.service.js';
 import type { BdlGame } from './balldontlie.types.js';
 
 const team = (id: number) => ({
@@ -49,7 +49,10 @@ describe('BalldontlieApiClient.fetchGamesPage', () => {
   beforeEach(() => {
     process.env.BDL_API_KEY = 'test-key';
     client = new BalldontlieApiClient();
-    fetchSpy = vi.spyOn(globalThis, 'fetch');
+    // spyOn だけだと本物の fetch が呼ばれ、本物の API を叩いてしまうため既定で失敗させる
+    fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockRejectedValue(new Error('テストで本物の API を叩こうとした'));
   });
 
   afterEach(() => {
@@ -104,6 +107,26 @@ describe('BalldontlieApiClient.fetchGamesPage', () => {
     );
 
     await expect(client.fetchGamesPage(2015)).rejects.toThrow('home_q1');
+  });
+
+  it('429 が返ったら状態コードと本文を持った BalldontlieApiError を投げる', async () => {
+    fetchSpy.mockResolvedValue(new Response('Too Many Requests', { status: 429 }));
+
+    const error = await client.fetchGamesPage(2015).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(BalldontlieApiError);
+    expect(error).toMatchObject({
+      message: 'HTTP Error: 429',
+      info: { status: 429, data: 'Too Many Requests' },
+    });
+  });
+
+  it('API キーが未設定なら API を叩かずにエラーにする', async () => {
+    delete process.env.BDL_API_KEY;
+    const clientWithoutKey = new BalldontlieApiClient();
+
+    await expect(clientWithoutKey.fetchGamesPage(2015)).rejects.toThrow('BDL_API_KEY is not set');
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it('最後のページ（next_cursor が無い）では nextCursor を null にする', async () => {
