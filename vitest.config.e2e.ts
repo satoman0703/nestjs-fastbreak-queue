@@ -5,6 +5,8 @@ export default defineConfig({
   test: {
     globals: true,
     root: './',
+    env: { DATABASE_URL: 'postgresql://fastbreak:fastbreak@localhost:15432/fastbreak_test' },
+    fileParallelism: false,
     include: ['**/*.e2e-spec.ts'],
   },
 });
