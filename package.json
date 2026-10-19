@@ -25,7 +25,8 @@
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
     "db:migrate:test": "DATABASE_URL=postgresql://fastbreak:fastbreak@localhost:15432/fastbreak_test prisma migrate deploy",
-    "postinstall": "prisma generate"
+    "postinstall": "prisma generate",
+    "db:psql": "docker compose exec postgres psql -U fastbreak -d fastbreak"
   },
   "dependencies": {
     "@nestjs/common": "^12.0.1",
