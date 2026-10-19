@@ -1,5 +1,8 @@
 import { Test, type TestingModule } from '@nestjs/testing';
-import { BalldontlieApiClient } from '@/balldontlie/balldontlie-api-client.service.js';
+import {
+  BalldontlieApiClient,
+  BalldontlieApiError,
+} from '@/balldontlie/balldontlie-api-client.service.js';
 import { SLEEP, type Sleep } from '@/common/sleep.js';
 import { IngestionService } from '@/ingestion/ingestion.service.js';
 import { PrismaService } from '@/prisma/prisma.service.js';
@@ -87,5 +90,40 @@ describe('IngestionService', () => {
     await service.run((await service.create(2015)).id);
 
     expect(await prisma.game.count()).toBe(130);
+  });
+
+  describe('途中で失敗したとき', () => {
+    beforeEach(() => {
+      // 1 ページ目は成功し、2 ページ目でレート制限に引っかかる
+      fetchGamesPage.mockImplementation(async (_season, { cursor } = {}) => {
+        if (cursor === undefined) return { games: makeBdlGames(1, 100), nextCursor: 100 };
+        throw new BalldontlieApiError('HTTP Error: 429', {
+          url: 'https://api.balldontlie.io/v1/games',
+          status: 429,
+          data: 'Too Many Requests',
+        });
+      });
+    });
+
+    it('FAILED にしてエラー内容と終了時刻を残し、そこまでの件数は保存したままにする', async () => {
+      const { id } = await service.create(2015);
+
+      await service.run(id).catch(() => {});
+
+      const ingestion = await prisma.ingestion.findUniqueOrThrow({ where: { id } });
+      expect(ingestion).toMatchObject({
+        status: 'FAILED',
+        error: 'HTTP Error: 429',
+        gamesFetched: 100,
+      });
+      expect(ingestion.finishedAt).toBeInstanceOf(Date);
+      expect(await prisma.game.count()).toBe(100);
+    });
+
+    it('呼び出し側にも失敗を伝えるため、例外を投げ直す', async () => {
+      const { id } = await service.create(2015);
+
+      await expect(service.run(id)).rejects.toBeInstanceOf(BalldontlieApiError);
+    });
   });
 });

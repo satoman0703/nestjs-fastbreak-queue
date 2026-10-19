@@ -1,5 +1,8 @@
-import { Inject, Injectable } from '@nestjs/common';
-import { BalldontlieApiClient } from '@/balldontlie/balldontlie-api-client.service.js';
+import { Inject, Injectable, Logger } from '@nestjs/common';
+import {
+  BalldontlieApiClient,
+  BalldontlieApiError,
+} from '@/balldontlie/balldontlie-api-client.service.js';
 import type { BdlGame } from '@/balldontlie/balldontlie.types.js';
 import { SLEEP, type Sleep } from '@/common/sleep.js';
 import type { Ingestion } from '@/generated/prisma/client.js';
@@ -17,6 +20,8 @@ const REQUEST_INTERVAL_MS = 12_000;
  */
 @Injectable()
 export class IngestionService {
+  private readonly logger = new Logger(IngestionService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly balldontlieApiClient: BalldontlieApiClient,
@@ -33,21 +38,47 @@ export class IngestionService {
       data: { status: 'RUNNING', startedAt: new Date() },
     });
 
-    let cursor: number | undefined;
-    while (true) {
-      const { games, nextCursor } = await this.balldontlieApiClient.fetchGamesPage(season, {
-        cursor,
-      });
-      await this.savePage(ingestionId, games);
+    try {
+      let cursor: number | undefined;
+      while (true) {
+        const { games, nextCursor } = await this.balldontlieApiClient.fetchGamesPage(season, {
+          cursor,
+        });
+        await this.savePage(ingestionId, games);
 
-      if (nextCursor === null) break;
-      cursor = nextCursor;
-      await this.sleep(REQUEST_INTERVAL_MS);
+        if (nextCursor === null) break;
+        cursor = nextCursor;
+        await this.sleep(REQUEST_INTERVAL_MS);
+      }
+    } catch (error) {
+      await this.markFailed(ingestionId, error);
+      // 握りつぶすと呼び出し側（同期 API や worker）が成功と区別できず、リトライの判断もできない
+      throw error;
     }
 
     await this.prisma.ingestion.update({
       where: { id: ingestionId },
       data: { status: 'COMPLETED', finishedAt: new Date() },
+    });
+  }
+
+  /**
+   * RUNNING のまま残ると、状態を見に来た人には処理中に見え続けるため、失敗として記録する。
+   * それまでに保存したページは消さない（試合は upsert なので、取り込み直しても重複しない）
+   */
+  private async markFailed(ingestionId: string, error: unknown): Promise<void> {
+    const message = error instanceof Error ? error.message : String(error);
+    this.logger.error(
+      {
+        message: `取り込みに失敗しました: ${message}`,
+        ingestionId,
+        info: error instanceof BalldontlieApiError ? error.info : undefined,
+      },
+      error instanceof Error ? error.stack : undefined,
+    );
+    await this.prisma.ingestion.update({
+      where: { id: ingestionId },
+      data: { status: 'FAILED', error: message, finishedAt: new Date() },
     });
   }
 
