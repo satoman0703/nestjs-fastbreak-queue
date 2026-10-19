@@ -1,5 +1,5 @@
-import type { BdlGame } from '../balldontlie/balldontlie.types.js';
-import { toGameData, toTeamData } from './game-mapper.js';
+import type { BdlGame } from '@/balldontlie/balldontlie.types.js';
+import { toGameData, toTeamData } from '@/ingestion/game-mapper.js';
 
 const hawks = {
   id: 1,

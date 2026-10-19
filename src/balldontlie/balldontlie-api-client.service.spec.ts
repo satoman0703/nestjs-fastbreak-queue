@@ -1,5 +1,8 @@
-import { BalldontlieApiClient, BalldontlieApiError } from './balldontlie-api-client.service.js';
-import type { BdlGame } from './balldontlie.types.js';
+import {
+  BalldontlieApiClient,
+  BalldontlieApiError,
+} from '@/balldontlie/balldontlie-api-client.service.js';
+import type { BdlGame } from '@/balldontlie/balldontlie.types.js';
 
 const team = (id: number) => ({
   id,

@@ -1,4 +1,4 @@
-import type { PrismaClient } from '../src/generated/prisma/client.js';
+import type { PrismaClient } from '@/generated/prisma/client.js';
 
 /** テスト間でデータが残らないよう、全テーブルを空にする */
 export async function truncateAll(prisma: PrismaClient): Promise<void> {

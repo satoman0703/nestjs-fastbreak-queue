@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import { NestFactory } from '@nestjs/core';
-import { AppModule } from './app.module.js';
-import { getAppType } from './config/app-type.js';
+import { AppModule } from '@/app.module.js';
+import { getAppType } from '@/config/app-type.js';
 
 async function bootstrap() {
   getAppType();

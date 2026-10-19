@@ -1,5 +1,5 @@
-import type { BdlGame, BdlTeam } from '../balldontlie/balldontlie.types.js';
-import type { Prisma } from '../generated/prisma/client.js';
+import type { BdlGame, BdlTeam } from '@/balldontlie/balldontlie.types.js';
+import type { Prisma } from '@/generated/prisma/client.js';
 
 /**
  * API のチームを Team テーブルの列に詰め替える

@@ -1,4 +1,4 @@
-import { getAppType } from './app-type.js';
+import { getAppType } from '@/config/app-type.js';
 
 describe('getAppType', () => {
   it('APP_TYPE=api なら api を返す', () => {

@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { bdlGamesResponseSchema, type BdlGame } from './balldontlie.types.js';
+import { bdlGamesResponseSchema, type BdlGame } from '@/balldontlie/balldontlie.types.js';
 
 /**
  * balldontlie の API が 400 以上を返したときのエラー。

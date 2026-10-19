@@ -1,4 +1,4 @@
-import { PrismaService } from './prisma.service.js';
+import { PrismaService } from '@/prisma/prisma.service.js';
 import { truncateAll } from '../../test/setup-db.js';
 
 describe('PrismaService', () => {
