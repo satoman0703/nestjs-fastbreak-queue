@@ -3,8 +3,9 @@ import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { App } from 'supertest/types.js';
 import { AppModule } from '@/app.module.js';
+import { setupApp } from '@/app.setup.js';
 
-describe('GET /health (e2e)', () => {
+describe('GET /api/health (e2e)', () => {
   let app: INestApplication<App>;
 
   beforeEach(async () => {
@@ -13,6 +14,7 @@ describe('GET /health (e2e)', () => {
       imports: [AppModule],
     }).compile();
     app = moduleFixture.createNestApplication();
+    setupApp(app);
     await app.init();
   });
 
@@ -23,7 +25,7 @@ describe('GET /health (e2e)', () => {
 
   it('起動モードを返す', () => {
     return request(app.getHttpServer())
-      .get('/health')
+      .get('/api/health')
       .expect(200)
       .expect({ status: 'ok', appType: 'worker' });
   });
