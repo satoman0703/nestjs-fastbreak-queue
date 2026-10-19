@@ -1,0 +1,4 @@
+# 依存ライブラリのインストール時スクリプトは、ここで許可したものだけ実行する
+allowBuilds:
+  '@prisma/engines': true
+  'prisma': true
