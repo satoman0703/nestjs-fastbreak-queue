@@ -9,7 +9,7 @@ describe('ingestion キュー', () => {
   let queue: Queue;
 
   beforeAll(async () => {
-    process.env.APP_TYPE = 'api';
+    vi.stubEnv('APP_TYPE', 'api');
     moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
     await moduleRef.init();
     queue = moduleRef.get<Queue>(getQueueToken(INGESTION_QUEUE));
@@ -23,7 +23,7 @@ describe('ingestion キュー', () => {
   afterAll(async () => {
     await queue.obliterate({ force: true });
     await moduleRef.close();
-    delete process.env.APP_TYPE;
+    vi.unstubAllEnvs();
   });
 
   it('キュー名は ingestion', () => {
