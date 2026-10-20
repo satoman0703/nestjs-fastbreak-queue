@@ -2,3 +2,5 @@
 allowBuilds:
   '@prisma/engines': true
   'prisma': true
+  # msgpackr を速くするためのネイティブ部品。無くても JavaScript だけで動くので、知らないスクリプトは実行しない
+  'msgpackr-extract': false
