@@ -1,5 +1,5 @@
 import { InjectQueue } from '@nestjs/bullmq';
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import type { Queue } from 'bullmq';
 import {
   BalldontlieApiClient,
@@ -8,6 +8,11 @@ import {
 import type { BdlGame } from '@/balldontlie/balldontlie.types.js';
 import { SLEEP, type Sleep } from '@/common/sleep.js';
 import type { Ingestion } from '@/generated/prisma/client.js';
+import type {
+  EnqueueIngestionResponse,
+  IngestionResponse,
+  SyncIngestionResponse,
+} from '@/ingestion/dto/ingestion-response.dto.js';
 import { toGameData, toTeamData } from '@/ingestion/game-mapper.js';
 import { INGESTION_QUEUE, type IngestionJobData } from '@/ingestion/ingestion.queue.js';
 import { PrismaService } from '@/prisma/prisma.service.js';
@@ -36,29 +41,43 @@ export class IngestionService {
     return this.prisma.ingestion.create({ data: { season } });
   }
 
-  /**
-   * 取り込みをキューに積み、終わるのを待たずに返す。処理は worker が行う。
-   * DB に行を作ってから積む。逆順だと、行ができる前に worker がジョブを取り、存在しない id を処理しようとする
-   */
-  async enqueue(season: number): Promise<Ingestion> {
-    const ingestion = await this.create(season);
-    try {
-      await this.ingestionQueue.add('ingest', { ingestionId: ingestion.id });
-    } catch (error) {
-      // 積めなかった行が PENDING のまま残ると、誰も処理しないのに待ち続けて見える
-      await this.markFailed(ingestion.id, error);
-      throw error;
+  async findById(id: string): Promise<IngestionResponse> {
+    const ingestion = await this.prisma.ingestion.findUnique({
+      where: { id },
+      omit: { updatedAt: true },
+    });
+    if (!ingestion) {
+      throw new NotFoundException(`Ingestion ${id} not found`);
     }
     return ingestion;
   }
 
   /**
+   * 取り込みをキューに積み、終わるのを待たずに返す。処理は worker が行う。
+   * DB に行を作ってから積む。逆順だと、行ができる前に worker がジョブを取り、存在しない id を処理しようとする
+   */
+  async enqueue(season: number): Promise<EnqueueIngestionResponse> {
+    const { id, status } = await this.create(season);
+    try {
+      await this.ingestionQueue.add('ingest', { ingestionId: id });
+    } catch (error) {
+      // 積めなかった行が PENDING のまま残ると、誰も処理しないのに待ち続けて見える
+      await this.markFailed(id, error);
+      throw error;
+    }
+    return { id, status };
+  }
+
+  /**
    * 取り込みが終わるまで待ってから、結果を返す同期版
    */
-  async ingestSync(season: number): Promise<Ingestion> {
+  async ingestSync(season: number): Promise<SyncIngestionResponse> {
     const { id } = await this.create(season);
     await this.run(id);
-    return this.prisma.ingestion.findUniqueOrThrow({ where: { id } });
+    return this.prisma.ingestion.findUniqueOrThrow({
+      where: { id },
+      select: { id: true, status: true, gamesFetched: true },
+    });
   }
 
   async run(ingestionId: string): Promise<void> {
