@@ -1,9 +1,11 @@
+import { getQueueToken } from '@nestjs/bullmq';
 import { Test, type TestingModule } from '@nestjs/testing';
 import {
   BalldontlieApiClient,
   BalldontlieApiError,
 } from '@/balldontlie/balldontlie-api-client.service.js';
 import { SLEEP, type Sleep } from '@/common/sleep.js';
+import { INGESTION_QUEUE } from '@/ingestion/ingestion.queue.js';
 import { IngestionService } from '@/ingestion/ingestion.service.js';
 import { PrismaService } from '@/prisma/prisma.service.js';
 import { makeBdlGames } from '../../test/fixtures/bdl-game.js';
@@ -23,6 +25,8 @@ describe('IngestionService', () => {
         PrismaService,
         { provide: BalldontlieApiClient, useValue: { fetchGamesPage } },
         { provide: SLEEP, useValue: sleep },
+        // run はキューを使わないので、中身の無い値で足りる
+        { provide: getQueueToken(INGESTION_QUEUE), useValue: {} },
       ],
     }).compile();
     // init で PrismaService の onModuleInit（DB 接続）が呼ばれる

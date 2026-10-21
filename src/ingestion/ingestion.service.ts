@@ -1,4 +1,6 @@
+import { InjectQueue } from '@nestjs/bullmq';
 import { Inject, Injectable, Logger } from '@nestjs/common';
+import type { Queue } from 'bullmq';
 import {
   BalldontlieApiClient,
   BalldontlieApiError,
@@ -7,6 +9,7 @@ import type { BdlGame } from '@/balldontlie/balldontlie.types.js';
 import { SLEEP, type Sleep } from '@/common/sleep.js';
 import type { Ingestion } from '@/generated/prisma/client.js';
 import { toGameData, toTeamData } from '@/ingestion/game-mapper.js';
+import { INGESTION_QUEUE, type IngestionJobData } from '@/ingestion/ingestion.queue.js';
 import { PrismaService } from '@/prisma/prisma.service.js';
 
 /**
@@ -16,7 +19,7 @@ const REQUEST_INTERVAL_MS = 12_000;
 
 /**
  * 1 シーズン分の試合を balldontlie から取り込む。
- * キューに依存しない形にして、同期エンドポイントからも worker からも同じ処理を呼べるようにする
+ * run はキューに依存しない形にして、同期エンドポイントからも worker からも同じ処理を呼べるようにする
  */
 @Injectable()
 export class IngestionService {
@@ -26,10 +29,36 @@ export class IngestionService {
     private readonly prisma: PrismaService,
     private readonly balldontlieApiClient: BalldontlieApiClient,
     @Inject(SLEEP) private readonly sleep: Sleep,
+    @InjectQueue(INGESTION_QUEUE) private readonly ingestionQueue: Queue<IngestionJobData>,
   ) {}
 
   async create(season: number): Promise<Ingestion> {
     return this.prisma.ingestion.create({ data: { season } });
+  }
+
+  /**
+   * 取り込みをキューに積み、終わるのを待たずに返す。処理は worker が行う。
+   * DB に行を作ってから積む。逆順だと、行ができる前に worker がジョブを取り、存在しない id を処理しようとする
+   */
+  async enqueue(season: number): Promise<Ingestion> {
+    const ingestion = await this.create(season);
+    try {
+      await this.ingestionQueue.add('ingest', { ingestionId: ingestion.id });
+    } catch (error) {
+      // 積めなかった行が PENDING のまま残ると、誰も処理しないのに待ち続けて見える
+      await this.markFailed(ingestion.id, error);
+      throw error;
+    }
+    return ingestion;
+  }
+
+  /**
+   * 取り込みが終わるまで待ってから、結果を返す同期版
+   */
+  async ingestSync(season: number): Promise<Ingestion> {
+    const { id } = await this.create(season);
+    await this.run(id);
+    return this.prisma.ingestion.findUniqueOrThrow({ where: { id } });
   }
 
   async run(ingestionId: string): Promise<void> {
