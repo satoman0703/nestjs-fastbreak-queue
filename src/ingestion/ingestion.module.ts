@@ -10,5 +10,6 @@ import { IngestionService } from '@/ingestion/ingestion.service.js';
   imports: [BullModule.registerQueue({ name: INGESTION_QUEUE })],
   controllers: [IngestionController],
   providers: [IngestionService, BalldontlieApiClient, { provide: SLEEP, useValue: sleep }],
+  exports: [IngestionService],
 })
 export class IngestionModule {}

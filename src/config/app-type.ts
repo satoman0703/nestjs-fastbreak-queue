@@ -5,6 +5,11 @@
  */
 export type AppType = 'api' | 'worker';
 
+/**
+ * AppModule.register が受け取った appType を DI で渡すための鍵。起動後に環境変数を読み直さない
+ */
+export const APP_TYPE = Symbol('APP_TYPE');
+
 const APP_TYPES: readonly AppType[] = ['api', 'worker'];
 
 export function getAppType(env: NodeJS.ProcessEnv = process.env): AppType {

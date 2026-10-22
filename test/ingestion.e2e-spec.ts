@@ -17,8 +17,9 @@ describe('/api/ingestions (e2e)', () => {
   let queue: Queue<IngestionJobData>;
 
   beforeAll(async () => {
-    vi.stubEnv('APP_TYPE', 'api');
-    const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
+    const moduleRef = await Test.createTestingModule({
+      imports: [AppModule.register('api')],
+    }).compile();
     app = moduleRef.createNestApplication();
     setupApp(app);
     await app.init();
@@ -38,7 +39,6 @@ describe('/api/ingestions (e2e)', () => {
   afterAll(async () => {
     await queue.obliterate({ force: true });
     await app.close();
-    vi.unstubAllEnvs();
   });
 
   describe('POST /api/ingestions', () => {

@@ -9,9 +9,8 @@ describe('GET /api/health (e2e)', () => {
   let app: INestApplication<App>;
 
   beforeEach(async () => {
-    vi.stubEnv('APP_TYPE', 'worker');
     const moduleFixture = await Test.createTestingModule({
-      imports: [AppModule],
+      imports: [AppModule.register('worker')],
     }).compile();
     app = moduleFixture.createNestApplication();
     setupApp(app);
@@ -20,7 +19,6 @@ describe('GET /api/health (e2e)', () => {
 
   afterEach(async () => {
     await app.close();
-    vi.unstubAllEnvs();
   });
 
   it('起動モードを返す', () => {

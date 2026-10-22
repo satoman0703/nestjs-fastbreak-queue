@@ -16,8 +16,7 @@ describe('POST /ingestions/sync (e2e)', () => {
   const fetchGamesPage = vi.fn<BalldontlieApiClient['fetchGamesPage']>();
 
   beforeAll(async () => {
-    vi.stubEnv('APP_TYPE', 'api');
-    const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
+    const moduleRef = await Test.createTestingModule({ imports: [AppModule.register('api')] })
       .overrideProvider(BalldontlieApiClient)
       .useValue({ fetchGamesPage })
       .overrideProvider(SLEEP)
@@ -42,7 +41,6 @@ describe('POST /ingestions/sync (e2e)', () => {
 
   afterAll(async () => {
     await app.close();
-    vi.unstubAllEnvs();
   });
 
   it('取り込みが終わるまで待ってから、結果を返す', async () => {
