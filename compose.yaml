@@ -1,3 +1,19 @@
+# 手元の開発用。本番では使わない（本番に持っていくのは Dockerfile で作る image だけ）
+# api と worker は同じ image。普段の開発ではホストで pnpm start:dev するので、--profile app を付けたときだけ起動する
+x-app: &app
+  build: .
+  image: nestjs-fastbreak-queue
+  profiles: [app]
+  depends_on: [postgres, redis]
+
+x-app-env: &app-env
+  # コンテナの中の localhost はそのコンテナ自身を指すため、compose のサービス名とコンテナ側のポートでつなぐ
+  DATABASE_URL: postgresql://fastbreak:fastbreak@postgres:5432/fastbreak
+  REDIS_HOST: redis
+  REDIS_PORT: 6379
+  BULL_PREFIX: bull
+  BDL_API_KEY: ${BDL_API_KEY:-}
+
 services:
   postgres:
     image: postgres:17-alpine
@@ -6,7 +22,7 @@ services:
       POSTGRES_PASSWORD: fastbreak
       POSTGRES_DB: fastbreak
     ports:
-      - '15432:5432'
+      - '127.0.0.1:15432:5432'
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
@@ -14,7 +30,22 @@ services:
   redis:
     image: redis:7.4-alpine
     ports:
-      - '16379:6379'
+      - '127.0.0.1:16379:6379'
+
+  api:
+    <<: *app
+    environment:
+      <<: *app-env
+      APP_TYPE: api
+    ports:
+      - '127.0.0.1:3000:3000'
+
+  # 外からリクエストを受けないので ports は開けない
+  worker:
+    <<: *app
+    environment:
+      <<: *app-env
+      APP_TYPE: worker
 
 volumes:
   postgres-data:

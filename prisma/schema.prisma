@@ -1,6 +1,8 @@
 generator client {
-  provider = "prisma-client"
-  output   = "../src/generated/prisma"
+  provider            = "prisma-client"
+  output              = "../src/generated/prisma"
+  /// 省略すると tsconfig.json から推測され、tsconfig が無い Docker の build 中は .ts になって起動できなくなる
+  importFileExtension = "js"
 }
 
 datasource db {
