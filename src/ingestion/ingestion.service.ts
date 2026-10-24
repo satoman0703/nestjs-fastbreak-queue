@@ -19,6 +19,7 @@ import {
   INGESTION_QUEUE,
   type IngestionJobData,
   ingestionJobId,
+  ingestionJobIdPrefix,
 } from '@/ingestion/ingestion.queue.js';
 import { PrismaService } from '@/prisma/prisma.service.js';
 
@@ -67,9 +68,9 @@ export class IngestionService {
     try {
       await this.ingestionQueue.add(
         'ingest',
-        { ingestionId: id },
+        { ingestionId: id, cursor: null },
         {
-          jobId: ingestionJobId(season),
+          jobId: ingestionJobId(season, null),
           ...INGESTION_JOB_RETRY,
           // 同じ jobId のジョブが Redis に残っている間は add しても積まれない。
           // 完了・失敗したジョブを残すと、そのシーズンを二度と取り込み直せなくなるので消す
@@ -87,12 +88,14 @@ export class IngestionService {
 
   /**
    * jobId で add の重複は防げるが、2 回目の POST は 202 を返したまま誰も処理しない行を残すため、行を作る前に断る。
-   * 完了・失敗したジョブは removeOnComplete / removeOnFail で消えるので、ジョブが残っていれば待ち・実行中・リトライ待ちのどれか。
+   * ページごとのジョブは jobId が cursor で変わるので、1 件を id で取らず、待ち・実行中・リトライ待ちを全件取って先頭部分で探す。
+   * 完了・失敗したジョブは removeOnComplete / removeOnFail で消えるので、見つかればチェーンの途中。
    * 確認と add の間に同じシーズンの POST が割り込むと両方ここを通る。そのときもジョブは jobId で 1 つになるが、片方の行は PENDING のまま残る
    */
   private async assertNotInProgress(season: number): Promise<void> {
-    const job = await this.ingestionQueue.getJob(ingestionJobId(season));
-    if (job) {
+    const prefix = ingestionJobIdPrefix(season);
+    const jobs = await this.ingestionQueue.getJobs(['waiting', 'active', 'delayed', 'prioritized']);
+    if (jobs.some((job) => job.id?.startsWith(prefix))) {
       throw new ConflictException(`Ingestion for season ${season} is already in progress`);
     }
   }

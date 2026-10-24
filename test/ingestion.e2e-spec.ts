@@ -7,7 +7,11 @@ import request from 'supertest';
 import { App } from 'supertest/types.js';
 import { AppModule } from '@/app.module.js';
 import { setupApp } from '@/app.setup.js';
-import { INGESTION_QUEUE, type IngestionJobData } from '@/ingestion/ingestion.queue.js';
+import {
+  INGESTION_QUEUE,
+  type IngestionJobData,
+  ingestionJobId,
+} from '@/ingestion/ingestion.queue.js';
 import { PrismaService } from '@/prisma/prisma.service.js';
 import { truncateAll } from './setup-db.js';
 
@@ -54,7 +58,7 @@ describe('/api/ingestions (e2e)', () => {
       expect(ingestion).toMatchObject({ season: 2015, status: 'PENDING' });
       expect(res.body).toEqual({ id: ingestion.id, status: 'PENDING' });
       const jobs = await queue.getWaiting();
-      expect(jobs.map((job) => job.data)).toEqual([{ ingestionId: ingestion.id }]);
+      expect(jobs.map((job) => job.data)).toEqual([{ ingestionId: ingestion.id, cursor: null }]);
     });
 
     it('同じシーズンを 2 回積んでも、待ち行列のジョブは 1 つ', async () => {
@@ -79,6 +83,16 @@ describe('/api/ingestions (e2e)', () => {
       await request(app.getHttpServer()).post('/api/ingestions').send({ season: 2015 }).expect(409);
 
       expect(await prisma.ingestion.count()).toBe(1);
+    });
+
+    it('同じシーズンのチェーンが 2 ページ目以降の途中でも 409 を返す', async () => {
+      await queue.add(
+        'ingest',
+        { ingestionId: 'in-progress', cursor: 100 },
+        { jobId: ingestionJobId(2015, 100) },
+      );
+
+      await request(app.getHttpServer()).post('/api/ingestions').send({ season: 2015 }).expect(409);
     });
 
     it('season が不正なら 400 を返し、行もジョブも作らない', async () => {

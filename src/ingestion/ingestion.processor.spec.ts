@@ -71,7 +71,7 @@ describe('IngestionProcessor', () => {
   // DB を更新した後で process が返り、そこで BullMQ がジョブを消すため、DB とは別に待つ
   const waitForJobRemoved = async (season: number) => {
     await vi.waitFor(async () => {
-      expect(await queue.getJob(ingestionJobId(season))).toBeUndefined();
+      expect(await queue.getJob(ingestionJobId(season, null))).toBeUndefined();
     }, WAIT_OPTIONS);
   };
 
@@ -99,7 +99,7 @@ describe('IngestionProcessor', () => {
     const { id } = await service.enqueue(2015);
 
     await vi.waitFor(async () => {
-      const job = await queue.getJob(ingestionJobId(2015));
+      const job = await queue.getJob(ingestionJobId(2015, null));
       expect(await job?.getState()).toBe('delayed');
       expect(job?.attemptsMade).toBe(1);
     }, WAIT_OPTIONS);
@@ -124,7 +124,7 @@ describe('IngestionProcessor', () => {
     const processor = new IngestionProcessor({ run } as unknown as IngestionService);
     const jobWith = (attemptsMade: number) =>
       ({
-        data: { ingestionId: 'ingestion-1' },
+        data: { ingestionId: 'ingestion-1', cursor: null },
         attemptsMade,
         opts: { attempts: 3 },
       }) as unknown as Job<IngestionJobData>;

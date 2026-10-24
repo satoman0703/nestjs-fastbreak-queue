@@ -6,9 +6,10 @@ import type { JobsOptions } from 'bullmq';
 export const INGESTION_QUEUE = 'ingestion';
 
 /**
- * ジョブに載せるのは id だけ。シーズンなどの中身は DB の Ingestion から読み、Redis と DB で値が食い違わないようにする
+ * ジョブに載せるのは id と、そのジョブが取るページの cursor（null は 1 ページ目）だけ。
+ * シーズンなどの中身は DB の Ingestion から読み、Redis と DB で値が食い違わないようにする
  */
-export type IngestionJobData = { ingestionId: string };
+export type IngestionJobData = { ingestionId: string; cursor: number | null };
 
 /**
  * 429 は 1 分待てば回復する見込みなので、30 秒 → 60 秒と間隔を倍にして、最初の失敗を含め 3 回まで試す
@@ -19,9 +20,16 @@ export const INGESTION_JOB_RETRY = {
 } as const satisfies Pick<JobsOptions, 'attempts' | 'backoff'>;
 
 /**
- * 同じシーズンのジョブを 1 つにまとめるための jobId。
+ * 同じシーズン・同じページのジョブを 1 つにまとめるための jobId。
  * ingestionId は POST のたびに変わるので使えない。BullMQ の custom jobId は `:` を含められないため `-` でつなぐ
  */
-export function ingestionJobId(season: number): string {
-  return `ingestion-season-${season}`;
+export function ingestionJobId(season: number, cursor: number | null): string {
+  return `${ingestionJobIdPrefix(season)}cursor-${cursor ?? 'first'}`;
+}
+
+/**
+ * チェーンのどのページにいても、そのシーズンのジョブを見つけるための jobId の先頭部分
+ */
+export function ingestionJobIdPrefix(season: number): string {
+  return `ingestion-season-${season}-`;
 }
