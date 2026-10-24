@@ -7,7 +7,11 @@ import {
   BalldontlieApiError,
 } from '@/balldontlie/balldontlie-api-client.service.js';
 import { SLEEP } from '@/common/sleep.js';
-import { INGESTION_QUEUE, type IngestionJobData } from '@/ingestion/ingestion.queue.js';
+import {
+  INGESTION_QUEUE,
+  type IngestionJobData,
+  ingestionJobId,
+} from '@/ingestion/ingestion.queue.js';
 import { IngestionService } from '@/ingestion/ingestion.service.js';
 import { PrismaService } from '@/prisma/prisma.service.js';
 import { makeBdlGames } from '../../test/fixtures/bdl-game.js';
@@ -15,7 +19,7 @@ import { truncateAll } from '../../test/setup-db.js';
 
 /**
  * worker は別の非同期ループで動くので、終わるまで繰り返し確かめる。
- * waitFor の既定（1 秒）だと遅いマシンで落ちうるため延ばす。1 テストで 2 回待つので、合計がテスト自体の上限（5 秒）に収まる値にする
+ * waitFor の既定（1 秒）だと遅いマシンで落ちうるため延ばす。何度も待つテストは、合計がテスト自体の上限（既定 5 秒）を超えうるので、テストの上限も延ばす
  */
 const WAIT_OPTIONS = { timeout: 2_000 };
 
@@ -50,28 +54,39 @@ describe('IngestionProcessor', () => {
     await moduleRef.close();
   });
 
-  it('積んだジョブを worker が取り出し、取り込みを COMPLETED まで進める', async () => {
+  const completeTwoPages = () =>
     fetchGamesPage.mockImplementation(async (_season, { cursor } = {}) =>
       cursor === undefined
         ? { games: makeBdlGames(1, 100), nextCursor: 100 }
         : { games: makeBdlGames(101, 30), nextCursor: null },
     );
 
+  const waitForStatus = async (id: string, status: 'COMPLETED' | 'FAILED') => {
+    await vi.waitFor(async () => {
+      expect(await prisma.ingestion.findUniqueOrThrow({ where: { id } })).toMatchObject({ status });
+    }, WAIT_OPTIONS);
+  };
+
+  // DB を更新した後で process が返り、そこで BullMQ がジョブを消すため、DB とは別に待つ
+  const waitForJobRemoved = async (season: number) => {
+    await vi.waitFor(async () => {
+      expect(await queue.getJob(ingestionJobId(season))).toBeUndefined();
+    }, WAIT_OPTIONS);
+  };
+
+  it('積んだジョブを worker が取り出し、取り込みを COMPLETED まで進め、終わったジョブは Redis から消える', async () => {
+    completeTwoPages();
+
     const { id } = await service.enqueue(2015);
 
-    await vi.waitFor(async () => {
-      expect(await prisma.ingestion.findUniqueOrThrow({ where: { id } })).toMatchObject({
-        status: 'COMPLETED',
-        gamesFetched: 130,
-      });
-    }, WAIT_OPTIONS);
-    // DB を COMPLETED にした後で process が返り、そこで BullMQ が completed に移すため、別に待つ
-    await vi.waitFor(async () => {
-      expect(await queue.getCompletedCount()).toBe(1);
-    }, WAIT_OPTIONS);
+    await waitForStatus(id, 'COMPLETED');
+    expect(await prisma.ingestion.findUniqueOrThrow({ where: { id } })).toMatchObject({
+      gamesFetched: 130,
+    });
+    await waitForJobRemoved(2015);
   });
 
-  it('取り込みが失敗したら、ジョブは failed に入り、DB の行は FAILED になる', async () => {
+  it('取り込みが失敗したら、DB の行は FAILED になり、ジョブは Redis から消える', async () => {
     fetchGamesPage.mockRejectedValue(
       new BalldontlieApiError('HTTP Error: 429', {
         url: 'https://api.balldontlie.io/v1/games',
@@ -82,11 +97,21 @@ describe('IngestionProcessor', () => {
 
     const { id } = await service.enqueue(2015);
 
-    await vi.waitFor(async () => {
-      expect(await queue.getFailedCount()).toBe(1);
-    }, WAIT_OPTIONS);
+    await waitForStatus(id, 'FAILED');
     const ingestion = await prisma.ingestion.findUniqueOrThrow({ where: { id } });
-    expect(ingestion).toMatchObject({ status: 'FAILED', error: 'HTTP Error: 429' });
+    expect(ingestion).toMatchObject({ error: 'HTTP Error: 429' });
     expect(ingestion.finishedAt).toBeInstanceOf(Date);
+    await waitForJobRemoved(2015);
   });
+
+  it('前回の取り込みが終わった後なら、同じシーズンをもう一度積んで処理できる', async () => {
+    completeTwoPages();
+    const first = await service.enqueue(2015);
+    await waitForStatus(first.id, 'COMPLETED');
+    await waitForJobRemoved(2015);
+
+    const second = await service.enqueue(2015);
+
+    await waitForStatus(second.id, 'COMPLETED');
+  }, 10_000);
 });

@@ -7,3 +7,11 @@ export const INGESTION_QUEUE = 'ingestion';
  * ジョブに載せるのは id だけ。シーズンなどの中身は DB の Ingestion から読み、Redis と DB で値が食い違わないようにする
  */
 export type IngestionJobData = { ingestionId: string };
+
+/**
+ * 同じシーズンのジョブを 1 つにまとめるための jobId。
+ * ingestionId は POST のたびに変わるので使えない。BullMQ の custom jobId は `:` を含められないため `-` でつなぐ
+ */
+export function ingestionJobId(season: number): string {
+  return `ingestion-season-${season}`;
+}

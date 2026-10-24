@@ -14,7 +14,11 @@ import type {
   SyncIngestionResponse,
 } from '@/ingestion/dto/ingestion-response.dto.js';
 import { toGameData, toTeamData } from '@/ingestion/game-mapper.js';
-import { INGESTION_QUEUE, type IngestionJobData } from '@/ingestion/ingestion.queue.js';
+import {
+  INGESTION_QUEUE,
+  type IngestionJobData,
+  ingestionJobId,
+} from '@/ingestion/ingestion.queue.js';
 import { PrismaService } from '@/prisma/prisma.service.js';
 
 /**
@@ -59,7 +63,17 @@ export class IngestionService {
   async enqueue(season: number): Promise<EnqueueIngestionResponse> {
     const { id, status } = await this.create(season);
     try {
-      await this.ingestionQueue.add('ingest', { ingestionId: id });
+      await this.ingestionQueue.add(
+        'ingest',
+        { ingestionId: id },
+        {
+          jobId: ingestionJobId(season),
+          // 同じ jobId のジョブが Redis に残っている間は add しても積まれない。
+          // 完了・失敗したジョブを残すと、そのシーズンを二度と取り込み直せなくなるので消す
+          removeOnComplete: true,
+          removeOnFail: true,
+        },
+      );
     } catch (error) {
       // 積めなかった行が PENDING のまま残ると、誰も処理しないのに待ち続けて見える
       await this.markFailed(id, error);

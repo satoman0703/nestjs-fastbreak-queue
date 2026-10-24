@@ -57,6 +57,13 @@ describe('/api/ingestions (e2e)', () => {
       expect(jobs.map((job) => job.data)).toEqual([{ ingestionId: ingestion.id }]);
     });
 
+    it('同じシーズンを 2 回積んでも、待ち行列のジョブは 1 つ', async () => {
+      await request(app.getHttpServer()).post('/api/ingestions').send({ season: 2015 });
+      await request(app.getHttpServer()).post('/api/ingestions').send({ season: 2015 });
+
+      expect(await queue.getWaitingCount()).toBe(1);
+    });
+
     it('season が不正なら 400 を返し、行もジョブも作らない', async () => {
       await request(app.getHttpServer())
         .post('/api/ingestions')
