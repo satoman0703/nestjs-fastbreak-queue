@@ -15,6 +15,7 @@ import type {
 } from '@/ingestion/dto/ingestion-response.dto.js';
 import { toGameData, toTeamData } from '@/ingestion/game-mapper.js';
 import {
+  INGESTION_JOB_RETRY,
   INGESTION_QUEUE,
   type IngestionJobData,
   ingestionJobId,
@@ -69,6 +70,7 @@ export class IngestionService {
         { ingestionId: id },
         {
           jobId: ingestionJobId(season),
+          ...INGESTION_JOB_RETRY,
           // 同じ jobId のジョブが Redis に残っている間は add しても積まれない。
           // 完了・失敗したジョブを残すと、そのシーズンを二度と取り込み直せなくなるので消す
           removeOnComplete: true,
@@ -107,10 +109,18 @@ export class IngestionService {
     });
   }
 
-  async run(ingestionId: string): Promise<void> {
+  /**
+   * @param options.isFinalAttempt false なら、失敗しても FAILED にせず PENDING に戻す（worker がリトライする）。
+   *   同期版はリトライしないので既定は true
+   */
+  async run(
+    ingestionId: string,
+    { isFinalAttempt = true }: { isFinalAttempt?: boolean } = {},
+  ): Promise<void> {
     const { season } = await this.prisma.ingestion.update({
       where: { id: ingestionId },
-      data: { status: 'RUNNING', startedAt: new Date() },
+      // リトライは 1 ページ目から取り直すので、前回の試行で数えた件数とエラーを消す
+      data: { status: 'RUNNING', startedAt: new Date(), gamesFetched: 0, error: null },
     });
 
     try {
@@ -126,7 +136,9 @@ export class IngestionService {
         await this.sleep(REQUEST_INTERVAL_MS);
       }
     } catch (error) {
-      await this.markFailed(ingestionId, error);
+      await (isFinalAttempt
+        ? this.markFailed(ingestionId, error)
+        : this.markRetrying(ingestionId, error));
       // 握りつぶすと呼び出し側（同期 API や worker）が成功と区別できず、リトライの判断もできない
       throw error;
     }
@@ -134,6 +146,22 @@ export class IngestionService {
     await this.prisma.ingestion.update({
       where: { id: ingestionId },
       data: { status: 'COMPLETED', finishedAt: new Date() },
+    });
+  }
+
+  /**
+   * リトライ待ちの間に FAILED と見せると、まだ成功しうるのに失敗と判断されるため、待ちに戻す。
+   * 何で失敗したかは見えるように error には残す
+   */
+  private async markRetrying(ingestionId: string, error: unknown): Promise<void> {
+    const message = error instanceof Error ? error.message : String(error);
+    this.logger.warn({
+      message: `取り込みに失敗しました。リトライします: ${message}`,
+      ingestionId,
+    });
+    await this.prisma.ingestion.update({
+      where: { id: ingestionId },
+      data: { status: 'PENDING', error: message },
     });
   }
 

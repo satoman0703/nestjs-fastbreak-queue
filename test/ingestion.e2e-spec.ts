@@ -64,6 +64,16 @@ describe('/api/ingestions (e2e)', () => {
       expect(await queue.getWaitingCount()).toBe(1);
     });
 
+    it('積んだジョブには、リトライの回数と待ち方が付いている', async () => {
+      await request(app.getHttpServer()).post('/api/ingestions').send({ season: 2015 }).expect(202);
+
+      const [job] = await queue.getWaiting();
+      expect(job.opts).toMatchObject({
+        attempts: 3,
+        backoff: { type: 'exponential', delay: 30_000 },
+      });
+    });
+
     it('同じシーズンが待ち・実行中なら 409 を返し、2 つ目の行を作らない', async () => {
       await request(app.getHttpServer()).post('/api/ingestions').send({ season: 2015 }).expect(202);
       await request(app.getHttpServer()).post('/api/ingestions').send({ season: 2015 }).expect(409);

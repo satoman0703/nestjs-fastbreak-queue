@@ -129,5 +129,30 @@ describe('IngestionService', () => {
 
       await expect(service.run(id)).rejects.toBeInstanceOf(BalldontlieApiError);
     });
+
+    it('最終試行でなければ、失敗しても PENDING に戻してエラーを残し、終了時刻は入れない', async () => {
+      const { id } = await service.create(2015);
+
+      await service.run(id, { isFinalAttempt: false }).catch(() => {});
+
+      const ingestion = await prisma.ingestion.findUniqueOrThrow({ where: { id } });
+      expect(ingestion).toMatchObject({ status: 'PENDING', error: 'HTTP Error: 429' });
+      expect(ingestion.finishedAt).toBeNull();
+    });
+
+    it('リトライで 1 ページ目からやり直しても、件数を二重に数えない', async () => {
+      const { id } = await service.create(2015);
+      await service.run(id, { isFinalAttempt: false }).catch(() => {});
+      fetchGamesPage.mockImplementation(async (_season, { cursor } = {}) =>
+        cursor === undefined
+          ? { games: makeBdlGames(1, 100), nextCursor: 100 }
+          : { games: makeBdlGames(101, 30), nextCursor: null },
+      );
+
+      await service.run(id);
+
+      const ingestion = await prisma.ingestion.findUniqueOrThrow({ where: { id } });
+      expect(ingestion).toMatchObject({ status: 'COMPLETED', gamesFetched: 130, error: null });
+    });
   });
 });

@@ -1,6 +1,6 @@
 import { getQueueToken } from '@nestjs/bullmq';
 import { Test, type TestingModule } from '@nestjs/testing';
-import type { Queue } from 'bullmq';
+import type { Job, Queue } from 'bullmq';
 import { AppModule } from '@/app.module.js';
 import {
   BalldontlieApiClient,
@@ -12,6 +12,7 @@ import {
   type IngestionJobData,
   ingestionJobId,
 } from '@/ingestion/ingestion.queue.js';
+import { IngestionProcessor } from '@/ingestion/ingestion.processor.js';
 import { IngestionService } from '@/ingestion/ingestion.service.js';
 import { PrismaService } from '@/prisma/prisma.service.js';
 import { makeBdlGames } from '../../test/fixtures/bdl-game.js';
@@ -86,7 +87,7 @@ describe('IngestionProcessor', () => {
     await waitForJobRemoved(2015);
   });
 
-  it('取り込みが失敗したら、DB の行は FAILED になり、ジョブは Redis から消える', async () => {
+  it('1 回目で失敗したら、ジョブはリトライ待ちになり、DB の行は FAILED ではなく PENDING でエラーを残す', async () => {
     fetchGamesPage.mockRejectedValue(
       new BalldontlieApiError('HTTP Error: 429', {
         url: 'https://api.balldontlie.io/v1/games',
@@ -97,11 +98,14 @@ describe('IngestionProcessor', () => {
 
     const { id } = await service.enqueue(2015);
 
-    await waitForStatus(id, 'FAILED');
+    await vi.waitFor(async () => {
+      const job = await queue.getJob(ingestionJobId(2015));
+      expect(await job?.getState()).toBe('delayed');
+      expect(job?.attemptsMade).toBe(1);
+    }, WAIT_OPTIONS);
     const ingestion = await prisma.ingestion.findUniqueOrThrow({ where: { id } });
-    expect(ingestion).toMatchObject({ error: 'HTTP Error: 429' });
-    expect(ingestion.finishedAt).toBeInstanceOf(Date);
-    await waitForJobRemoved(2015);
+    expect(ingestion).toMatchObject({ status: 'PENDING', error: 'HTTP Error: 429' });
+    expect(ingestion.finishedAt).toBeNull();
   });
 
   it('前回の取り込みが終わった後なら、同じシーズンをもう一度積んで処理できる', async () => {
@@ -114,4 +118,31 @@ describe('IngestionProcessor', () => {
 
     await waitForStatus(second.id, 'COMPLETED');
   }, 10_000);
+
+  describe('最終試行かどうかの判定', () => {
+    const run = vi.fn<IngestionService['run']>();
+    const processor = new IngestionProcessor({ run } as unknown as IngestionService);
+    const jobWith = (attemptsMade: number) =>
+      ({
+        data: { ingestionId: 'ingestion-1' },
+        attemptsMade,
+        opts: { attempts: 3 },
+      }) as unknown as Job<IngestionJobData>;
+
+    beforeEach(() => {
+      run.mockReset().mockResolvedValue(undefined);
+    });
+
+    it('3 回中 1 回目（まだ 1 回も失敗していない）は最終試行ではない', async () => {
+      await processor.process(jobWith(0));
+
+      expect(run).toHaveBeenCalledWith('ingestion-1', { isFinalAttempt: false });
+    });
+
+    it('3 回中 3 回目（2 回失敗した後）は最終試行', async () => {
+      await processor.process(jobWith(2));
+
+      expect(run).toHaveBeenCalledWith('ingestion-1', { isFinalAttempt: true });
+    });
+  });
 });
