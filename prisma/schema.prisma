@@ -66,6 +66,9 @@ model Ingestion {
   season       Int
   status       IngestionStatus @default(PENDING)
   gamesFetched Int             @default(0)
+  /// 次に取るページの cursor。null は 1 ページ目（COMPLETED のときは取るページが残っていない）。
+  /// ページの保存と同じトランザクションで進めるので、ジョブの cursor と違えばそのページは保存済み
+  cursor       Int?
   error        String?
   /// worker が処理を始めた時刻。createdAt との差がキューでの待ち時間になる
   startedAt    DateTime?

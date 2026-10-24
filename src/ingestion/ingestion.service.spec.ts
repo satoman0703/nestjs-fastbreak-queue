@@ -5,7 +5,7 @@ import {
   BalldontlieApiError,
 } from '@/balldontlie/balldontlie-api-client.service.js';
 import { SLEEP, type Sleep } from '@/common/sleep.js';
-import { INGESTION_QUEUE } from '@/ingestion/ingestion.queue.js';
+import { INGESTION_QUEUE, ingestionJobId } from '@/ingestion/ingestion.queue.js';
 import { IngestionService } from '@/ingestion/ingestion.service.js';
 import { PrismaService } from '@/prisma/prisma.service.js';
 import { makeBdlGames } from '../../test/fixtures/bdl-game.js';
@@ -14,6 +14,7 @@ import { truncateAll } from '../../test/setup-db.js';
 describe('IngestionService', () => {
   const fetchGamesPage = vi.fn<BalldontlieApiClient['fetchGamesPage']>();
   const sleep = vi.fn<Sleep>();
+  const queueAdd = vi.fn();
   let moduleRef: TestingModule;
   let service: IngestionService;
   let prisma: PrismaService;
@@ -25,8 +26,8 @@ describe('IngestionService', () => {
         PrismaService,
         { provide: BalldontlieApiClient, useValue: { fetchGamesPage } },
         { provide: SLEEP, useValue: sleep },
-        // run はキューを使わないので、中身の無い値で足りる
-        { provide: getQueueToken(INGESTION_QUEUE), useValue: {} },
+        // 次のページのジョブを積んだかだけを見る
+        { provide: getQueueToken(INGESTION_QUEUE), useValue: { add: queueAdd } },
       ],
     }).compile();
     // init で PrismaService の onModuleInit（DB 接続）が呼ばれる
@@ -39,6 +40,7 @@ describe('IngestionService', () => {
     await truncateAll(prisma);
     fetchGamesPage.mockReset();
     sleep.mockReset().mockResolvedValue(undefined);
+    queueAdd.mockReset();
     fetchGamesPage.mockImplementation(async (_season, { cursor } = {}) =>
       cursor === undefined
         ? { games: makeBdlGames(1, 100), nextCursor: 100 }
@@ -153,6 +155,100 @@ describe('IngestionService', () => {
 
       const ingestion = await prisma.ingestion.findUniqueOrThrow({ where: { id } });
       expect(ingestion).toMatchObject({ status: 'COMPLETED', gamesFetched: 130, error: null });
+    });
+  });
+
+  describe('ingestPage（1 ジョブ = 1 ページ）', () => {
+    const twoPages = () =>
+      fetchGamesPage.mockImplementation(async (_season, { cursor } = {}) =>
+        cursor === undefined
+          ? { games: makeBdlGames(1, 100), nextCursor: 100 }
+          : { games: makeBdlGames(101, 30), nextCursor: null },
+      );
+
+    it('1 ページ目を保存して cursor を進め、次のページのジョブを積む', async () => {
+      twoPages();
+      const { id } = await service.create(2015);
+
+      await service.ingestPage({ ingestionId: id, cursor: null }, { isFinalAttempt: true });
+
+      const ingestion = await prisma.ingestion.findUniqueOrThrow({ where: { id } });
+      expect(ingestion).toMatchObject({ status: 'RUNNING', gamesFetched: 100, cursor: 100 });
+      expect(ingestion.startedAt).toBeInstanceOf(Date);
+      expect(queueAdd).toHaveBeenCalledWith(
+        'ingest',
+        { ingestionId: id, cursor: 100 },
+        expect.objectContaining({ jobId: ingestionJobId(2015, 100) }),
+      );
+    });
+
+    it('最後のページを保存したら COMPLETED にし、次のジョブは積まない', async () => {
+      twoPages();
+      const { id } = await service.create(2015);
+      await service.ingestPage({ ingestionId: id, cursor: null }, { isFinalAttempt: true });
+      queueAdd.mockClear();
+
+      await service.ingestPage({ ingestionId: id, cursor: 100 }, { isFinalAttempt: true });
+
+      const ingestion = await prisma.ingestion.findUniqueOrThrow({ where: { id } });
+      expect(ingestion).toMatchObject({ status: 'COMPLETED', gamesFetched: 130, cursor: null });
+      expect(ingestion.finishedAt).toBeInstanceOf(Date);
+      expect(queueAdd).not.toHaveBeenCalled();
+    });
+
+    it('保存済みのページのジョブがもう一度来たら、API も保存もせず、次のジョブを積み直すだけにする', async () => {
+      twoPages();
+      const { id } = await service.create(2015);
+      await service.ingestPage({ ingestionId: id, cursor: null }, { isFinalAttempt: true });
+
+      await service.ingestPage({ ingestionId: id, cursor: null }, { isFinalAttempt: true });
+
+      expect(fetchGamesPage).toHaveBeenCalledTimes(1);
+      expect(await prisma.ingestion.findUniqueOrThrow({ where: { id } })).toMatchObject({
+        gamesFetched: 100,
+      });
+      // 積み直しても jobId が同じなので、BullMQ が 1 つにまとめる
+      expect(queueAdd.mock.calls.map(([, , opts]) => opts.jobId)).toEqual([
+        ingestionJobId(2015, 100),
+        ingestionJobId(2015, 100),
+      ]);
+    });
+
+    it('同じページのジョブが 2 つ同時に動いても、件数を二重に数えない', async () => {
+      twoPages();
+      const { id } = await service.create(2015);
+
+      // 両方が DB を読んで「未保存」と判断してから、保存に進む
+      await Promise.all([
+        service.ingestPage({ ingestionId: id, cursor: null }, { isFinalAttempt: true }),
+        service.ingestPage({ ingestionId: id, cursor: null }, { isFinalAttempt: true }),
+      ]);
+
+      expect(fetchGamesPage).toHaveBeenCalledTimes(2);
+      expect(await prisma.ingestion.findUniqueOrThrow({ where: { id } })).toMatchObject({
+        gamesFetched: 100,
+        cursor: 100,
+      });
+    });
+
+    it('途中のページが最終試行で失敗したら FAILED にし、次のジョブは積まない', async () => {
+      fetchGamesPage.mockRejectedValue(
+        new BalldontlieApiError('HTTP Error: 429', {
+          url: 'https://api.balldontlie.io/v1/games',
+          status: 429,
+          data: 'Too Many Requests',
+        }),
+      );
+      const { id } = await service.create(2015);
+
+      await expect(
+        service.ingestPage({ ingestionId: id, cursor: null }, { isFinalAttempt: true }),
+      ).rejects.toBeInstanceOf(BalldontlieApiError);
+
+      expect(await prisma.ingestion.findUniqueOrThrow({ where: { id } })).toMatchObject({
+        status: 'FAILED',
+      });
+      expect(queueAdd).not.toHaveBeenCalled();
     });
   });
 });

@@ -69,13 +69,13 @@ describe('IngestionProcessor', () => {
   };
 
   // DB を更新した後で process が返り、そこで BullMQ がジョブを消すため、DB とは別に待つ
-  const waitForJobRemoved = async (season: number) => {
+  const waitForJobsRemoved = async () => {
     await vi.waitFor(async () => {
-      expect(await queue.getJob(ingestionJobId(season, null))).toBeUndefined();
+      expect(await queue.getJobCountByTypes('waiting', 'active', 'delayed', 'prioritized')).toBe(0);
     }, WAIT_OPTIONS);
   };
 
-  it('積んだジョブを worker が取り出し、取り込みを COMPLETED まで進め、終わったジョブは Redis から消える', async () => {
+  it('1 ページずつジョブがつながり、最後のページで COMPLETED になり、ジョブは Redis から消える', async () => {
     completeTwoPages();
 
     const { id } = await service.enqueue(2015);
@@ -84,7 +84,7 @@ describe('IngestionProcessor', () => {
     expect(await prisma.ingestion.findUniqueOrThrow({ where: { id } })).toMatchObject({
       gamesFetched: 130,
     });
-    await waitForJobRemoved(2015);
+    await waitForJobsRemoved();
   });
 
   it('1 回目で失敗したら、ジョブはリトライ待ちになり、DB の行は FAILED ではなく PENDING でエラーを残す', async () => {
@@ -112,7 +112,7 @@ describe('IngestionProcessor', () => {
     completeTwoPages();
     const first = await service.enqueue(2015);
     await waitForStatus(first.id, 'COMPLETED');
-    await waitForJobRemoved(2015);
+    await waitForJobsRemoved();
 
     const second = await service.enqueue(2015);
 
@@ -120,8 +120,8 @@ describe('IngestionProcessor', () => {
   }, 10_000);
 
   describe('最終試行かどうかの判定', () => {
-    const run = vi.fn<IngestionService['run']>();
-    const processor = new IngestionProcessor({ run } as unknown as IngestionService);
+    const ingestPage = vi.fn<IngestionService['ingestPage']>();
+    const processor = new IngestionProcessor({ ingestPage } as unknown as IngestionService);
     const jobWith = (attemptsMade: number) =>
       ({
         data: { ingestionId: 'ingestion-1', cursor: null },
@@ -130,19 +130,25 @@ describe('IngestionProcessor', () => {
       }) as unknown as Job<IngestionJobData>;
 
     beforeEach(() => {
-      run.mockReset().mockResolvedValue(undefined);
+      ingestPage.mockReset().mockResolvedValue(undefined);
     });
 
     it('3 回中 1 回目（まだ 1 回も失敗していない）は最終試行ではない', async () => {
       await processor.process(jobWith(0));
 
-      expect(run).toHaveBeenCalledWith('ingestion-1', { isFinalAttempt: false });
+      expect(ingestPage).toHaveBeenCalledWith(
+        { ingestionId: 'ingestion-1', cursor: null },
+        { isFinalAttempt: false },
+      );
     });
 
     it('3 回中 3 回目（2 回失敗した後）は最終試行', async () => {
       await processor.process(jobWith(2));
 
-      expect(run).toHaveBeenCalledWith('ingestion-1', { isFinalAttempt: true });
+      expect(ingestPage).toHaveBeenCalledWith(
+        { ingestionId: 'ingestion-1', cursor: null },
+        { isFinalAttempt: true },
+      );
     });
   });
 });
