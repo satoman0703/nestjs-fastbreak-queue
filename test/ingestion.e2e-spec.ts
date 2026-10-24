@@ -64,6 +64,13 @@ describe('/api/ingestions (e2e)', () => {
       expect(await queue.getWaitingCount()).toBe(1);
     });
 
+    it('同じシーズンが待ち・実行中なら 409 を返し、2 つ目の行を作らない', async () => {
+      await request(app.getHttpServer()).post('/api/ingestions').send({ season: 2015 }).expect(202);
+      await request(app.getHttpServer()).post('/api/ingestions').send({ season: 2015 }).expect(409);
+
+      expect(await prisma.ingestion.count()).toBe(1);
+    });
+
     it('season が不正なら 400 を返し、行もジョブも作らない', async () => {
       await request(app.getHttpServer())
         .post('/api/ingestions')

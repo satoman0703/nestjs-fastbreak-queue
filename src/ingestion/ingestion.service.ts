@@ -1,5 +1,5 @@
 import { InjectQueue } from '@nestjs/bullmq';
-import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { ConflictException, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import type { Queue } from 'bullmq';
 import {
   BalldontlieApiClient,
@@ -61,6 +61,7 @@ export class IngestionService {
    * DB に行を作ってから積む。逆順だと、行ができる前に worker がジョブを取り、存在しない id を処理しようとする
    */
   async enqueue(season: number): Promise<EnqueueIngestionResponse> {
+    await this.assertNotInProgress(season);
     const { id, status } = await this.create(season);
     try {
       await this.ingestionQueue.add(
@@ -80,6 +81,18 @@ export class IngestionService {
       throw error;
     }
     return { id, status };
+  }
+
+  /**
+   * jobId で add の重複は防げるが、2 回目の POST は 202 を返したまま誰も処理しない行を残すため、行を作る前に断る。
+   * 完了・失敗したジョブは removeOnComplete / removeOnFail で消えるので、ジョブが残っていれば待ち・実行中・リトライ待ちのどれか。
+   * 確認と add の間に同じシーズンの POST が割り込むと両方ここを通る。そのときもジョブは jobId で 1 つになるが、片方の行は PENDING のまま残る
+   */
+  private async assertNotInProgress(season: number): Promise<void> {
+    const job = await this.ingestionQueue.getJob(ingestionJobId(season));
+    if (job) {
+      throw new ConflictException(`Ingestion for season ${season} is already in progress`);
+    }
   }
 
   /**
