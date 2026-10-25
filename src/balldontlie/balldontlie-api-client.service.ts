@@ -21,9 +21,9 @@ export class BalldontlieApiError extends Error {
 @Injectable()
 export class BalldontlieApiClient {
   /**
-   * balldontlie の API エンドポイント
+   * balldontlie の API エンドポイント。複数 worker の計測などで本物に負荷をかけないよう、BDL_API_URL で偽物に差し替えられる
    */
-  private endpoint = 'https://api.balldontlie.io/v1';
+  private endpoint: string;
 
   /**
    * 認証用の API キー。Authorization ヘッダーにそのまま入れる
@@ -37,6 +37,7 @@ export class BalldontlieApiClient {
    */
   constructor() {
     this.apiKey = process.env.BDL_API_KEY ?? '';
+    this.endpoint = process.env.BDL_API_URL || 'https://api.balldontlie.io/v1';
   }
 
   /**

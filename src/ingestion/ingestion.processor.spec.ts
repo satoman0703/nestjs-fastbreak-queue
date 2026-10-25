@@ -47,11 +47,14 @@ describe('IngestionProcessor', () => {
   beforeEach(async () => {
     await truncateAll(prisma);
     await queue.obliterate({ force: true });
+    // limiter が数えた回数は Redis に 60 秒残るので、前のテストで処理したジョブの分を消す
+    await queue.removeRateLimitKey();
     fetchGamesPage.mockReset();
   });
 
   afterAll(async () => {
     await queue.obliterate({ force: true });
+    await queue.removeRateLimitKey();
     await moduleRef.close();
   });
 
@@ -118,6 +121,12 @@ describe('IngestionProcessor', () => {
 
     await waitForStatus(second.id, 'COMPLETED');
   }, 10_000);
+
+  it('worker はキュー全体で 60 秒に 5 ジョブまでしか処理しない（1 ジョブ = API 1 回なので 5 回/分）', () => {
+    const { worker } = moduleRef.get(IngestionProcessor);
+
+    expect(worker.opts.limiter).toEqual({ max: 5, duration: 60_000 });
+  });
 
   describe('最終試行かどうかの判定', () => {
     const ingestPage = vi.fn<IngestionService['ingestPage']>();

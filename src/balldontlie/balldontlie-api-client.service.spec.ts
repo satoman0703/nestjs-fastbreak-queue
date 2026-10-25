@@ -139,4 +139,17 @@ describe('BalldontlieApiClient.fetchGamesPage', () => {
 
     expect(result.nextCursor).toBeNull();
   });
+
+  it('BDL_API_URL を指定すると、本物の代わりにその URL を叩く', async () => {
+    vi.stubEnv('BDL_API_URL', 'http://localhost:4010/v1');
+    const fakeClient = new BalldontlieApiClient();
+    fetchSpy.mockResolvedValue(jsonResponse({ data: [game], meta: { per_page: 100 } }));
+
+    await fakeClient.fetchGamesPage(2015);
+
+    expect(fetchSpy.mock.calls[0][0]).toBe(
+      'http://localhost:4010/v1/games?seasons[]=2015&per_page=100',
+    );
+    vi.unstubAllEnvs();
+  });
 });

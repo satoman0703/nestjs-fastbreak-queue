@@ -12,6 +12,12 @@ export const INGESTION_QUEUE = 'ingestion';
 export type IngestionJobData = { ingestionId: string; cursor: number | null };
 
 /**
+ * balldontlie 無料プランの 5 回/分を、worker が何台あってもキュー全体で守る。
+ * BullMQ の limiter は API 呼び出しではなくジョブを数えるので、1 ジョブ = 1 ページ（API 1 回）にしている
+ */
+export const INGESTION_RATE_LIMIT = { max: 5, duration: 60_000 } as const;
+
+/**
  * 429 は 1 分待てば回復する見込みなので、30 秒 → 60 秒と間隔を倍にして、最初の失敗を含め 3 回まで試す
  */
 export const INGESTION_JOB_RETRY = {

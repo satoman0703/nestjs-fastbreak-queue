@@ -13,6 +13,8 @@ x-app-env: &app-env
   REDIS_PORT: 6379
   BULL_PREFIX: bull
   BDL_API_KEY: ${BDL_API_KEY:-}
+  # 偽物の API（pnpm fake:bdl）で計測するときだけ http://host.docker.internal:4010/v1 を入れる
+  BDL_API_URL: ${BDL_API_URL:-}
 
 services:
   postgres:
