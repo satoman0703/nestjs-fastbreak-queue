@@ -3,5 +3,5 @@ import type { PrismaClient } from '@/generated/prisma/client.js';
 /** テスト間でデータが残らないよう、全テーブルを空にする */
 export async function truncateAll(prisma: PrismaClient): Promise<void> {
   await prisma.$executeRaw`
-    TRUNCATE TABLE "Game", "Team", "Ingestion" RESTART IDENTITY CASCADE`;
+    TRUNCATE TABLE "Game", "Team", "Ingestion", "Export", "ExportPart" RESTART IDENTITY CASCADE`;
 }

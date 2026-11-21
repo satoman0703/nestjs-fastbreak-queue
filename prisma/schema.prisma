@@ -77,3 +77,43 @@ model Ingestion {
   createdAt    DateTime        @default(now())
   updatedAt    DateTime        @updatedAt
 }
+
+enum ExportStatus {
+  PENDING
+  PROCESSING
+  /// 全 Batch が終わり、Complete が連結している
+  FINALIZING
+  COMPLETED
+  FAILED
+}
+
+/// 成績表 CSV のエクスポート。Execute → Batch × batchCount → Complete の進み具合を持つ
+model Export {
+  id               String       @id @default(uuid())
+  /// 重複を除いて昇順。batchNumber はこの並びの 1 始まりの位置
+  seasons          Int[]
+  status           ExportStatus @default(PENDING)
+  /// Execute が分けた Batch の数。分ける前は null
+  batchCount       Int?
+  /// 終わった Batch の数。最後の Batch だけが Complete を積めるよう、+1 した後の値で判定する
+  batchesCompleted Int          @default(0)
+  /// Complete が連結した CSV。COMPLETED になるまでは null
+  csv              String?
+  error            String?
+  createdAt        DateTime     @default(now())
+  finishedAt       DateTime?
+  updatedAt        DateTime     @updatedAt
+
+  parts ExportPart[]
+}
+
+/// Batch 1 つ分の CSV。api と worker が別コンテナでも読めるよう、ファイルではなく DB に置く
+model ExportPart {
+  exportId    String
+  batchNumber Int
+  csv         String
+
+  export Export @relation(fields: [exportId], references: [id], onDelete: Cascade)
+
+  @@id([exportId, batchNumber])
+}

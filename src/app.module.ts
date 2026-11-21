@@ -2,6 +2,7 @@ import { BullModule } from '@nestjs/bullmq';
 import { type DynamicModule, Module } from '@nestjs/common';
 import { Redis } from 'ioredis';
 import { APP_TYPE, type AppType } from '@/config/app-type.js';
+import { ExportModule } from '@/export/export.module.js';
 import { HealthController } from '@/health/health.controller.js';
 import { IngestionModule } from '@/ingestion/ingestion.module.js';
 import { PrismaModule } from '@/prisma/prisma.module.js';
@@ -30,6 +31,7 @@ export class AppModule {
         }),
         PrismaModule,
         IngestionModule,
+        ExportModule,
         ...(appType === 'worker' ? [WorkerModule] : []),
       ],
       controllers: [HealthController],
