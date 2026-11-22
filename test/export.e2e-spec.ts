@@ -98,4 +98,29 @@ describe('/api/exports (e2e)', () => {
       await request(app.getHttpServer()).get('/api/exports/abc').expect(400);
     });
   });
+
+  describe('GET /api/exports/:id/csv', () => {
+    it('COMPLETED なら CSV を返す', async () => {
+      const { id } = await prisma.export.create({
+        data: { seasons: [2015], status: 'COMPLETED', csv: 'header\na\n' },
+      });
+
+      const res = await request(app.getHttpServer()).get(`/api/exports/${id}/csv`).expect(200);
+
+      expect(res.headers['content-type']).toMatch(/^text\/csv/);
+      expect(res.text).toBe('header\na\n');
+    });
+
+    it('まだ終わっていなければ 409', async () => {
+      const { id } = await prisma.export.create({
+        data: { seasons: [2015], status: 'FINALIZING' },
+      });
+
+      await request(app.getHttpServer()).get(`/api/exports/${id}/csv`).expect(409);
+    });
+
+    it('無い id なら 404', async () => {
+      await request(app.getHttpServer()).get(`/api/exports/${randomUUID()}/csv`).expect(404);
+    });
+  });
 });

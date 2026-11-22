@@ -87,10 +87,10 @@ enum ExportStatus {
   FAILED
 }
 
-/// 成績表 CSV のエクスポート。Execute → Batch × batchCount → Complete の進み具合を持つ
+/// 試合 CSV のエクスポート。Execute → Batch × batchCount → Complete の進み具合を持つ
 model Export {
   id               String       @id @default(uuid())
-  /// 重複を除いて昇順。batchNumber はこの並びの 1 始まりの位置
+  /// 対象のシーズン。重複を除いて昇順
   seasons          Int[]
   status           ExportStatus @default(PENDING)
   /// Execute が分けた Batch の数。分ける前は null

@@ -8,9 +8,15 @@ export const EXPORT_QUEUE = 'export';
 export type ExportJobName = 'execute' | 'batch' | 'complete';
 
 /**
- * execute と complete は exportId だけ。batch は何番目の Batch か（Export.seasons の 1 始まりの位置）も載せる
+ * execute と complete は exportId だけ。batch は何番目の Batch か（1 始まり）と、その Batch で出す試合の id も載せる。
+ * id を Batch の側で引き直すと、Execute の後に取り込みで試合が増えたとき、区切りがずれて重複や抜けが出るため、Execute が決めた id を渡す
  */
-export type ExportJobData = { exportId: string; batchNumber?: number };
+export type ExportJobData = { exportId: string; batchNumber?: number; gameIds?: number[] };
+
+/**
+ * 1 つの Batch で出す試合の数の DI トークン。テストで少ない試合でも複数の Batch に分かれるよう、差し替えられるようにする
+ */
+export const EXPORT_BATCH_SIZE = Symbol('EXPORT_BATCH_SIZE');
 
 /**
  * batch と complete のリトライ。集計と連結は DB だけで終わり、待てば直る外部の制限も無いので、短い間隔で 3 回まで試す
@@ -26,4 +32,8 @@ export function exportExecuteJobId(exportId: string): string {
 
 export function exportBatchJobId(exportId: string, batchNumber: number): string {
   return `export-${exportId}-batch-${batchNumber}`;
+}
+
+export function exportCompleteJobId(exportId: string): string {
+  return `export-${exportId}-complete`;
 }
