@@ -13,6 +13,7 @@ import {
   exportExecuteJobId,
 } from '@/export/export.queue.js';
 import { buildGamesCsv } from '@/export/games-csv.js';
+import { Prisma } from '@/generated/prisma/client.js';
 import { PrismaService } from '@/prisma/prisma.service.js';
 
 /**
@@ -126,8 +127,9 @@ export class ExportService {
    * 渡された試合の CSV を保存し、終わった Batch の数を +1 する。+1 した後の値が batchCount と等しい Batch だけが Complete を積む。
    * 読んでから +1 を書くと、同時に終わった Batch がどちらも「自分は最後ではない」と判断して Complete が積まれないため、
    * DB の increment（UPDATE ... SET x = x + 1 RETURNING）の戻り値で判定する。
-   * 保存した後、+1 する前に落ちたリトライでも ExportPart が主キー違反にならないよう upsert にする。
-   * +1 した後、ジョブの完了を BullMQ に返す前に落ちると、リトライで二重に +1 する（5 章で直す）。
+   * +1 した後、完了を BullMQ に返す前に落ちると同じ Batch がもう一度動く。そこで +1 すると、残りの Batch が終わる前に
+   * Complete が動いて試合の抜けた CSV ができるので、ExportPart の create と +1 を 1 つのトランザクションにし、
+   * ExportPart がもうあれば（主キー違反）数え終わっているとして +1 しない。保存と数を同じ DB に置いているので、ロックは要らない。
    * ほかの Batch が最終試行で失敗して FAILED になっていたら、もう完成しないので何もしない。
    * 例外を投げるとこの Batch までリトライされるので、正常に終わらせる
    */
@@ -153,21 +155,22 @@ export class ExportService {
       return;
     }
     const csv = await buildGamesCsv(this.prisma, gameIds, { withHeader: batchNumber === 1 });
-    await this.prisma.exportPart.upsert({
-      where: { exportId_batchNumber: { exportId, batchNumber } },
-      create: { exportId, batchNumber, csv },
-      update: { csv },
-    });
-
-    const { batchesCompleted, batchCount } = await this.prisma.export.update({
-      where: { id: exportId },
-      data: { batchesCompleted: { increment: 1 } },
-      select: { batchesCompleted: true, batchCount: true },
-    });
+    const { batchesCompleted, batchCount } = await this.saveAndCountBatch(
+      exportId,
+      batchNumber,
+      csv,
+    );
     if (batchesCompleted !== batchCount) {
       return;
     }
-    await this.prisma.export.update({ where: { id: exportId }, data: { status: 'FINALIZING' } });
+    // もう一度動いた Batch が、COMPLETED のエクスポートを FINALIZING に戻さないよう、PROCESSING のときだけ変える。
+    // update だと条件に合わない（0 件）ときに例外になり、Batch が失敗扱いになるので updateMany を使う
+    await this.prisma.export.updateMany({
+      where: { id: exportId, status: 'PROCESSING' },
+      data: { status: 'FINALIZING' },
+    });
+    // 前の試行が Complete を積む前に落ちた場合に備えて、もう一度動いた Batch も積む。
+    // まだ残っていれば jobId で 1 つになり、もう終わっていれば complete は FINALIZING 以外では何もしない
     await this.exportQueue.add(
       'complete',
       { exportId },
@@ -178,6 +181,33 @@ export class ExportService {
         removeOnFail: true,
       },
     );
+  }
+
+  /**
+   * @returns +1 した後の終わった数。前の試行で保存済みなら、+1 せずに今の数
+   */
+  private async saveAndCountBatch(
+    exportId: string,
+    batchNumber: number,
+    csv: string,
+  ): Promise<{ batchesCompleted: number; batchCount: number | null }> {
+    const select = { batchesCompleted: true, batchCount: true } as const;
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        await tx.exportPart.create({ data: { exportId, batchNumber, csv } });
+        return tx.export.update({
+          where: { id: exportId },
+          data: { batchesCompleted: { increment: 1 } },
+          select,
+        });
+      });
+    } catch (error) {
+      if (!(error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002')) {
+        throw error;
+      }
+      this.logger.warn({ message: '保存済みの Batch なので数えません', exportId, batchNumber });
+      return this.prisma.export.findUniqueOrThrow({ where: { id: exportId }, select });
+    }
   }
 
   /**

@@ -203,7 +203,7 @@ describe('ExportService', () => {
 
     it('Batch が最終試行で失敗したら FAILED にしてエラーと終了時刻を残し、例外を投げ直す', async () => {
       const id = await executed([2015, 2016]);
-      vi.spyOn(prisma.exportPart, 'upsert').mockRejectedValueOnce(new Error('db down'));
+      vi.spyOn(prisma.game, 'findMany').mockRejectedValueOnce(new Error('db down'));
 
       await expect(service.runJob('batch', batch(id), { isFinalAttempt: true })).rejects.toThrow(
         'db down',
@@ -216,7 +216,7 @@ describe('ExportService', () => {
 
     it('最終試行でなければ、失敗しても状態を変えずに例外を投げ直す（BullMQ がリトライする）', async () => {
       const id = await executed([2015, 2016]);
-      vi.spyOn(prisma.exportPart, 'upsert').mockRejectedValueOnce(new Error('db down'));
+      vi.spyOn(prisma.game, 'findMany').mockRejectedValueOnce(new Error('db down'));
 
       await expect(service.runJob('batch', batch(id), { isFinalAttempt: false })).rejects.toThrow(
         'db down',
@@ -255,6 +255,72 @@ describe('ExportService', () => {
         error: 'db down',
       });
       expect(queueAddBulk).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('同じ Batch がもう一度動いたとき（+1 した後、完了を返す前に落ちて再配信された）', () => {
+    const executed = async (seasons: number[]) => {
+      const { id } = await service.enqueue(seasons);
+      await service.execute(id);
+      queueAdd.mockReset();
+      return id;
+    };
+    const completeJobs = () => queueAdd.mock.calls.filter(([name]) => name === 'complete');
+
+    it('終わった数を二重に数えず、残りの Batch が終わるまで complete を積まない', async () => {
+      const id = await executed([2015, 2016]);
+
+      await service.runBatch({ exportId: id, batchNumber: 1, gameIds: [2, 1] });
+      await service.runBatch({ exportId: id, batchNumber: 1, gameIds: [2, 1] });
+
+      expect(await prisma.export.findUniqueOrThrow({ where: { id } })).toMatchObject({
+        status: 'PROCESSING',
+        batchesCompleted: 1,
+      });
+      expect(completeJobs()).toHaveLength(0);
+    });
+
+    it('同じ Batch が同時に 2 つ動いても、1 回だけ数える', async () => {
+      const id = await executed([2015, 2016]);
+
+      await Promise.all([
+        service.runBatch({ exportId: id, batchNumber: 1, gameIds: [2, 1] }),
+        service.runBatch({ exportId: id, batchNumber: 1, gameIds: [2, 1] }),
+      ]);
+
+      expect(await prisma.export.findUniqueOrThrow({ where: { id } })).toMatchObject({
+        batchesCompleted: 1,
+      });
+    });
+
+    it('最後の Batch がもう一度動いたら、complete を同じ jobId で積み直す（前の試行が積む前に落ちた場合に備える）', async () => {
+      const id = await executed([2015, 2016]);
+      await service.runBatch({ exportId: id, batchNumber: 1, gameIds: [2, 1] });
+      await service.runBatch({ exportId: id, batchNumber: 2, gameIds: [3, 4] });
+      queueAdd.mockReset();
+
+      await service.runBatch({ exportId: id, batchNumber: 2, gameIds: [3, 4] });
+
+      expect(await prisma.export.findUniqueOrThrow({ where: { id } })).toMatchObject({
+        status: 'FINALIZING',
+        batchesCompleted: 2,
+      });
+      expect(completeJobs()).toEqual([
+        ['complete', { exportId: id }, expect.objectContaining({ jobId: exportCompleteJobId(id) })],
+      ]);
+    });
+
+    it('COMPLETED の後に Batch がもう一度動いても、FINALIZING に戻さない', async () => {
+      // 2016 は 1 試合なので Batch は 1 つ
+      const id = await executed([2016]);
+      await service.runBatch({ exportId: id, batchNumber: 1, gameIds: [4] });
+      await service.complete(id);
+
+      await service.runBatch({ exportId: id, batchNumber: 1, gameIds: [4] });
+
+      expect(await prisma.export.findUniqueOrThrow({ where: { id } })).toMatchObject({
+        status: 'COMPLETED',
+      });
     });
   });
 
