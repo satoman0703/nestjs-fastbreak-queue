@@ -63,6 +63,24 @@ describe('ExportProcessor', () => {
     }, WAIT_OPTIONS);
   });
 
+  it('execute は失敗してもリトライせず、エクスポートを FAILED にする', async () => {
+    const findMany = vi.spyOn(prisma.game, 'findMany').mockRejectedValueOnce(new Error('db down'));
+    const { id } = await service.enqueue([2015]);
+
+    await vi.waitFor(async () => {
+      expect(await prisma.export.findUniqueOrThrow({ where: { id } })).toMatchObject({
+        status: 'FAILED',
+        error: 'db down',
+      });
+    }, WAIT_OPTIONS);
+    // リトライ待ち（delayed）に入らず、removeOnFail で消える
+    await vi.waitFor(async () => {
+      expect(await queue.getJobCountByTypes('waiting', 'active', 'delayed')).toBe(0);
+    }, WAIT_OPTIONS);
+    expect(findMany).toHaveBeenCalledTimes(1);
+    findMany.mockRestore();
+  });
+
   it('ジョブを同時に 3 つまで処理する', () => {
     expect(moduleRef.get(ExportProcessor).worker.opts.concurrency).toBe(3);
   });

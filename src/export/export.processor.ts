@@ -4,7 +4,7 @@ import { EXPORT_QUEUE, type ExportJobData, type ExportJobName } from '@/export/e
 import { ExportService } from '@/export/export.service.js';
 
 /**
- * export キューのジョブを、ジョブ名で 3 段に振り分ける。
+ * export キューのジョブを取り出して、execute / batch / complete を実行する。
  * 取り込みと違って外部 API の制限が無く DB だけで終わるので、同時に 3 つまで処理する
  */
 @Processor(EXPORT_QUEUE, { concurrency: 3 })
@@ -13,20 +13,12 @@ export class ExportProcessor extends WorkerHost {
     super();
   }
 
+  /**
+   * attemptsMade は「これまでに失敗した回数」なので、実行中の試行は attemptsMade + 1 回目。
+   * execute は attempts を付けない（BullMQ が 0 を入れる）ので、常に最終試行になる
+   */
   async process(job: Job<ExportJobData, void, ExportJobName>): Promise<void> {
-    const { exportId, batchNumber, gameIds } = job.data;
-    switch (job.name) {
-      case 'execute':
-        return this.exportService.execute(exportId);
-      case 'batch':
-        // batch のジョブは execute が必ず batchNumber と gameIds を付けて積む
-        return this.exportService.runBatch({
-          exportId,
-          batchNumber: batchNumber!,
-          gameIds: gameIds!,
-        });
-      case 'complete':
-        return this.exportService.complete(exportId);
-    }
+    const isFinalAttempt = job.attemptsMade + 1 >= (job.opts.attempts ?? 1);
+    await this.exportService.runJob(job.name, job.data, { isFinalAttempt });
   }
 }

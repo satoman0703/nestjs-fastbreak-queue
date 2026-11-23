@@ -188,6 +188,76 @@ describe('ExportService', () => {
     });
   });
 
+  describe('runJob（失敗の扱い）', () => {
+    const executed = async (seasons: number[]) => {
+      const { id } = await service.enqueue(seasons);
+      await service.execute(id);
+      queueAdd.mockReset();
+      return id;
+    };
+    const batch = (exportId: string) => ({ exportId, batchNumber: 1, gameIds: [2, 1] });
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it('Batch が最終試行で失敗したら FAILED にしてエラーと終了時刻を残し、例外を投げ直す', async () => {
+      const id = await executed([2015, 2016]);
+      vi.spyOn(prisma.exportPart, 'upsert').mockRejectedValueOnce(new Error('db down'));
+
+      await expect(service.runJob('batch', batch(id), { isFinalAttempt: true })).rejects.toThrow(
+        'db down',
+      );
+
+      const exp = await prisma.export.findUniqueOrThrow({ where: { id } });
+      expect(exp).toMatchObject({ status: 'FAILED', error: 'db down', batchesCompleted: 0 });
+      expect(exp.finishedAt).toBeInstanceOf(Date);
+    });
+
+    it('最終試行でなければ、失敗しても状態を変えずに例外を投げ直す（BullMQ がリトライする）', async () => {
+      const id = await executed([2015, 2016]);
+      vi.spyOn(prisma.exportPart, 'upsert').mockRejectedValueOnce(new Error('db down'));
+
+      await expect(service.runJob('batch', batch(id), { isFinalAttempt: false })).rejects.toThrow(
+        'db down',
+      );
+
+      expect(await prisma.export.findUniqueOrThrow({ where: { id } })).toMatchObject({
+        status: 'PROCESSING',
+        error: null,
+        finishedAt: null,
+      });
+    });
+
+    it('FAILED のエクスポートの Batch は、保存も数えもせず、complete も積まずに正常終了する', async () => {
+      const id = await executed([2015]);
+      await prisma.export.update({ where: { id }, data: { status: 'FAILED' } });
+
+      await service.runJob('batch', batch(id), { isFinalAttempt: false });
+
+      expect(await prisma.exportPart.count()).toBe(0);
+      expect(await prisma.export.findUniqueOrThrow({ where: { id } })).toMatchObject({
+        batchesCompleted: 0,
+      });
+      expect(queueAdd).not.toHaveBeenCalled();
+    });
+
+    it('execute が失敗したら FAILED にする', async () => {
+      const { id } = await service.enqueue([2015]);
+      vi.spyOn(prisma.game, 'findMany').mockRejectedValueOnce(new Error('db down'));
+
+      await expect(
+        service.runJob('execute', { exportId: id }, { isFinalAttempt: true }),
+      ).rejects.toThrow('db down');
+
+      expect(await prisma.export.findUniqueOrThrow({ where: { id } })).toMatchObject({
+        status: 'FAILED',
+        error: 'db down',
+      });
+      expect(queueAddBulk).not.toHaveBeenCalled();
+    });
+  });
+
   describe('complete', () => {
     it('Batch の CSV を batchNumber の順に連結し、COMPLETED にして終了時刻を記録する', async () => {
       const { id } = await prisma.export.create({

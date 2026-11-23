@@ -1,5 +1,5 @@
 import { InjectQueue } from '@nestjs/bullmq';
-import { ConflictException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { ConflictException, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import type { Queue } from 'bullmq';
 import type { EnqueueExportResponse, ExportResponse } from '@/export/dto/export-response.dto.js';
 import {
@@ -20,6 +20,8 @@ import { PrismaService } from '@/prisma/prisma.service.js';
  */
 @Injectable()
 export class ExportService {
+  private readonly logger = new Logger(ExportService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     @InjectQueue(EXPORT_QUEUE)
@@ -40,6 +42,35 @@ export class ExportService {
       { jobId: exportExecuteJobId(id), removeOnComplete: true, removeOnFail: true },
     );
     return { id, status };
+  }
+
+  /**
+   * ジョブ名で 3 段に振り分ける。最終試行で失敗したらエクスポートを FAILED にし、例外は投げ直す。
+   * PROCESSING のまま残ると、終わった Batch の数が batchCount に届かず Complete が積まれないので、処理中に見え続ける。
+   * 例外を握りつぶすと、BullMQ が成功と判断してリトライしなくなる
+   * @param options.isFinalAttempt 失敗したらもうリトライされないか（execute は attempts を付けないので常に true）
+   */
+  async runJob(
+    name: ExportJobName,
+    { exportId, batchNumber, gameIds }: ExportJobData,
+    { isFinalAttempt }: { isFinalAttempt: boolean },
+  ): Promise<void> {
+    try {
+      switch (name) {
+        case 'execute':
+          return await this.execute(exportId);
+        case 'batch':
+          // batch のジョブは execute が必ず batchNumber と gameIds を付けて積む
+          return await this.runBatch({ exportId, batchNumber: batchNumber!, gameIds: gameIds! });
+        case 'complete':
+          return await this.complete(exportId);
+      }
+    } catch (error) {
+      if (isFinalAttempt) {
+        await this.markFailed(exportId, error);
+      }
+      throw error;
+    }
   }
 
   async findById(id: string): Promise<ExportResponse> {
@@ -96,7 +127,9 @@ export class ExportService {
    * 読んでから +1 を書くと、同時に終わった Batch がどちらも「自分は最後ではない」と判断して Complete が積まれないため、
    * DB の increment（UPDATE ... SET x = x + 1 RETURNING）の戻り値で判定する。
    * 保存した後、+1 する前に落ちたリトライでも ExportPart が主キー違反にならないよう upsert にする。
-   * +1 した後、ジョブの完了を BullMQ に返す前に落ちると、リトライで二重に +1 する（5 章で直す）
+   * +1 した後、ジョブの完了を BullMQ に返す前に落ちると、リトライで二重に +1 する（5 章で直す）。
+   * ほかの Batch が最終試行で失敗して FAILED になっていたら、もう完成しないので何もしない。
+   * 例外を投げるとこの Batch までリトライされるので、正常に終わらせる
    */
   async runBatch({
     exportId,
@@ -107,6 +140,18 @@ export class ExportService {
     batchNumber: number;
     gameIds: number[];
   }): Promise<void> {
+    const { status } = await this.prisma.export.findUniqueOrThrow({
+      where: { id: exportId },
+      select: { status: true },
+    });
+    if (status === 'FAILED') {
+      this.logger.warn({
+        message: 'ほかの Batch が失敗したので処理しません',
+        exportId,
+        batchNumber,
+      });
+      return;
+    }
     const csv = await buildGamesCsv(this.prisma, gameIds, { withHeader: batchNumber === 1 });
     await this.prisma.exportPart.upsert({
       where: { exportId_batchNumber: { exportId, batchNumber } },
@@ -154,6 +199,18 @@ export class ExportService {
         csv: exp.parts.map((part) => part.csv).join(''),
         finishedAt: new Date(),
       },
+    });
+  }
+
+  private async markFailed(exportId: string, error: unknown): Promise<void> {
+    const message = error instanceof Error ? error.message : String(error);
+    this.logger.error(
+      { message: `エクスポートに失敗しました: ${message}`, exportId },
+      error instanceof Error ? error.stack : undefined,
+    );
+    await this.prisma.export.update({
+      where: { id: exportId },
+      data: { status: 'FAILED', error: message, finishedAt: new Date() },
     });
   }
 
