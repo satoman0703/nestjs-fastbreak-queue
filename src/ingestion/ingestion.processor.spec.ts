@@ -8,7 +8,9 @@ import {
 } from '@/balldontlie/balldontlie-api-client.service.js';
 import { SLEEP } from '@/common/sleep.js';
 import {
+  INGESTION_DLQ,
   INGESTION_QUEUE,
+  type IngestionDlqJobData,
   type IngestionJobData,
   ingestionJobId,
 } from '@/ingestion/ingestion.queue.js';
@@ -30,6 +32,7 @@ describe('IngestionProcessor', () => {
   let service: IngestionService;
   let prisma: PrismaService;
   let queue: Queue<IngestionJobData>;
+  let dlq: Queue<IngestionDlqJobData>;
 
   beforeAll(async () => {
     moduleRef = await Test.createTestingModule({ imports: [AppModule.register('worker')] })
@@ -42,11 +45,13 @@ describe('IngestionProcessor', () => {
     service = moduleRef.get(IngestionService);
     prisma = moduleRef.get(PrismaService);
     queue = moduleRef.get(getQueueToken(INGESTION_QUEUE));
+    dlq = moduleRef.get(getQueueToken(INGESTION_DLQ));
   });
 
   beforeEach(async () => {
     await truncateAll(prisma);
     await queue.obliterate({ force: true });
+    await dlq.obliterate({ force: true });
     // limiter が数えた回数は Redis に 60 秒残るので、前のテストで処理したジョブの分を消す
     await queue.removeRateLimitKey();
     fetchGamesPage.mockReset();
@@ -54,6 +59,7 @@ describe('IngestionProcessor', () => {
 
   afterAll(async () => {
     await queue.obliterate({ force: true });
+    await dlq.obliterate({ force: true });
     await queue.removeRateLimitKey();
     await moduleRef.close();
   });
@@ -125,6 +131,26 @@ describe('IngestionProcessor', () => {
     await waitForStatus(id, 'FAILED');
     await waitForJobsRemoved();
     expect(fetchGamesPage).toHaveBeenCalledTimes(1);
+  });
+
+  it('最後に失敗したジョブは元のキューからは消え、DLQ に残る', async () => {
+    fetchGamesPage.mockRejectedValue(
+      new BalldontlieApiError('HTTP Error: 401', {
+        url: 'https://api.balldontlie.io/v1/games',
+        status: 401,
+        data: 'Unauthorized',
+      }),
+    );
+
+    const { id } = await service.enqueue(2015);
+
+    await waitForStatus(id, 'FAILED');
+    await waitForJobsRemoved();
+    expect(await queue.getJob(ingestionJobId(2015, null))).toBeUndefined();
+    const dlqJob = await dlq.getJob(id);
+    expect(dlqJob?.data).toEqual({ ingestionId: id, cursor: null, error: 'HTTP Error: 401' });
+    // DLQ を処理する worker は無いので、待ちのまま残る
+    expect(await dlqJob?.getState()).toBe('waiting');
   });
 
   it('前回の取り込みが終わった後なら、同じシーズンをもう一度積んで処理できる', async () => {

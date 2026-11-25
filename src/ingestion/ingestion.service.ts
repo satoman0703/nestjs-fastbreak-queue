@@ -15,8 +15,10 @@ import type {
 } from '@/ingestion/dto/ingestion-response.dto.js';
 import { toGameData, toTeamData } from '@/ingestion/game-mapper.js';
 import {
+  INGESTION_DLQ,
   INGESTION_JOB_RETRY,
   INGESTION_QUEUE,
+  type IngestionDlqJobData,
   type IngestionJobData,
   ingestionJobId,
   ingestionJobIdPrefix,
@@ -59,6 +61,7 @@ export class IngestionService {
     private readonly balldontlieApiClient: BalldontlieApiClient,
     @Inject(SLEEP) private readonly sleep: Sleep,
     @InjectQueue(INGESTION_QUEUE) private readonly ingestionQueue: Queue<IngestionJobData>,
+    @InjectQueue(INGESTION_DLQ) private readonly dlq: Queue<IngestionDlqJobData>,
   ) {}
 
   async create(season: number): Promise<Ingestion> {
@@ -156,9 +159,12 @@ export class IngestionService {
           : (await this.prisma.ingestion.findUniqueOrThrow({ where: { id: ingestionId } })).cursor;
       } catch (error) {
         const unrecoverable = toUnrecoverable(error);
-        await (isFinalAttempt || unrecoverable
-          ? this.markFailed(ingestionId, error)
-          : this.markRetrying(ingestionId, error));
+        if (isFinalAttempt || unrecoverable) {
+          await this.markFailed(ingestionId, error);
+          await this.moveToDlq({ ingestionId, cursor }, error);
+        } else {
+          await this.markRetrying(ingestionId, error);
+        }
         throw unrecoverable ?? error;
       }
     }
@@ -166,6 +172,16 @@ export class IngestionService {
     if (nextCursor !== null) {
       await this.addPageJob(ingestion.season, { ingestionId, cursor: nextCursor });
     }
+  }
+
+  /**
+   * 失敗したページのジョブを DLQ に写す。元のジョブは removeOnFail で消えるので、積み直すにはここに残したものを使う。
+   * 失敗したらチェーンはそこで止まるので、1 つの取り込みで DLQ に入るのは 1 つだけ。jobId を ingestionId にして、取り込みの id で引けるようにする。
+   * removeOnComplete / removeOnFail は付けない（残すのが目的）
+   */
+  private async moveToDlq(data: IngestionJobData, error: unknown): Promise<void> {
+    const message = error instanceof Error ? error.message : String(error);
+    await this.dlq.add('ingest', { ...data, error: message }, { jobId: data.ingestionId });
   }
 
   /**

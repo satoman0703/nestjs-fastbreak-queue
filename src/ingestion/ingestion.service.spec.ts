@@ -6,7 +6,7 @@ import {
   BalldontlieApiError,
 } from '@/balldontlie/balldontlie-api-client.service.js';
 import { SLEEP, type Sleep } from '@/common/sleep.js';
-import { INGESTION_QUEUE, ingestionJobId } from '@/ingestion/ingestion.queue.js';
+import { INGESTION_DLQ, INGESTION_QUEUE, ingestionJobId } from '@/ingestion/ingestion.queue.js';
 import { IngestionService } from '@/ingestion/ingestion.service.js';
 import { PrismaService } from '@/prisma/prisma.service.js';
 import { makeBdlGames } from '../../test/fixtures/bdl-game.js';
@@ -16,6 +16,7 @@ describe('IngestionService', () => {
   const fetchGamesPage = vi.fn<BalldontlieApiClient['fetchGamesPage']>();
   const sleep = vi.fn<Sleep>();
   const queueAdd = vi.fn();
+  const dlqAdd = vi.fn();
   let moduleRef: TestingModule;
   let service: IngestionService;
   let prisma: PrismaService;
@@ -29,6 +30,7 @@ describe('IngestionService', () => {
         { provide: SLEEP, useValue: sleep },
         // 次のページのジョブを積んだかだけを見る
         { provide: getQueueToken(INGESTION_QUEUE), useValue: { add: queueAdd } },
+        { provide: getQueueToken(INGESTION_DLQ), useValue: { add: dlqAdd } },
       ],
     }).compile();
     // init で PrismaService の onModuleInit（DB 接続）が呼ばれる
@@ -42,6 +44,7 @@ describe('IngestionService', () => {
     fetchGamesPage.mockReset();
     sleep.mockReset().mockResolvedValue(undefined);
     queueAdd.mockReset();
+    dlqAdd.mockReset();
     fetchGamesPage.mockImplementation(async (_season, { cursor } = {}) =>
       cursor === undefined
         ? { games: makeBdlGames(1, 100), nextCursor: 100 }
@@ -298,6 +301,52 @@ describe('IngestionService', () => {
         expect(await prisma.ingestion.findUniqueOrThrow({ where: { id } })).toMatchObject({
           status: 'PENDING',
         });
+      });
+    });
+
+    describe('DLQ', () => {
+      const apiError = (status: number) =>
+        new BalldontlieApiError(`HTTP Error: ${status}`, {
+          url: 'https://api.balldontlie.io/v1/games',
+          status,
+          data: '',
+        });
+
+      it('最終試行で失敗したら、失敗したページのジョブを ingestionId を jobId にして DLQ に積む', async () => {
+        fetchGamesPage.mockRejectedValue(apiError(429));
+        const { id } = await service.create(2015);
+
+        await service
+          .ingestPage({ ingestionId: id, cursor: null }, { isFinalAttempt: true })
+          .catch(() => {});
+
+        expect(dlqAdd).toHaveBeenCalledWith(
+          'ingest',
+          { ingestionId: id, cursor: null, error: 'HTTP Error: 429' },
+          { jobId: id },
+        );
+      });
+
+      it('リトライしないエラー（401）は、最終試行でなくても DLQ に積む', async () => {
+        fetchGamesPage.mockRejectedValue(apiError(401));
+        const { id } = await service.create(2015);
+
+        await service
+          .ingestPage({ ingestionId: id, cursor: null }, { isFinalAttempt: false })
+          .catch(() => {});
+
+        expect(dlqAdd).toHaveBeenCalledTimes(1);
+      });
+
+      it('リトライ待ちになる失敗では DLQ に積まない', async () => {
+        fetchGamesPage.mockRejectedValue(apiError(429));
+        const { id } = await service.create(2015);
+
+        await service
+          .ingestPage({ ingestionId: id, cursor: null }, { isFinalAttempt: false })
+          .catch(() => {});
+
+        expect(dlqAdd).not.toHaveBeenCalled();
       });
     });
   });

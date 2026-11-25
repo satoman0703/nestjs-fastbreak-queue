@@ -12,6 +12,17 @@ export const INGESTION_QUEUE = 'ingestion';
 export type IngestionJobData = { ingestionId: string; cursor: number | null };
 
 /**
+ * 最後の試行で失敗した取り込みジョブを残す DLQ。BullMQ には DLQ が無く、失敗したジョブは removeOnFail で消えるため、別のキューに写す。
+ * 処理する worker は置かない（人が原因を直してから積み直す）
+ */
+export const INGESTION_DLQ = 'ingestion-dlq';
+
+/**
+ * 失敗したジョブの data と、何で失敗したか
+ */
+export type IngestionDlqJobData = IngestionJobData & { error: string };
+
+/**
  * balldontlie 無料プランの 5 回/分を、worker が何台あってもキュー全体で守る。
  * BullMQ の limiter は API 呼び出しではなくジョブを数えるので、1 ジョブ = 1 ページ（API 1 回）にしている
  */
