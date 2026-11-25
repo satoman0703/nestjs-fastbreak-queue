@@ -111,6 +111,22 @@ describe('IngestionProcessor', () => {
     expect(ingestion.finishedAt).toBeNull();
   });
 
+  it('401 ならリトライ待ちにせず、API を 1 回呼んだだけで FAILED になる', async () => {
+    fetchGamesPage.mockRejectedValue(
+      new BalldontlieApiError('HTTP Error: 401', {
+        url: 'https://api.balldontlie.io/v1/games',
+        status: 401,
+        data: 'Unauthorized',
+      }),
+    );
+
+    const { id } = await service.enqueue(2015);
+
+    await waitForStatus(id, 'FAILED');
+    await waitForJobsRemoved();
+    expect(fetchGamesPage).toHaveBeenCalledTimes(1);
+  });
+
   it('前回の取り込みが終わった後なら、同じシーズンをもう一度積んで処理できる', async () => {
     completeTwoPages();
     const first = await service.enqueue(2015);

@@ -1,6 +1,6 @@
 import { InjectQueue } from '@nestjs/bullmq';
 import { ConflictException, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
-import type { Queue } from 'bullmq';
+import { type Queue, UnrecoverableError } from 'bullmq';
 import {
   BalldontlieApiClient,
   BalldontlieApiError,
@@ -32,6 +32,19 @@ const REQUEST_INTERVAL_MS = 12_000;
  * 保存しようとしたページが、すでに別の試行で保存されていたことを表す。トランザクションを取り消すために投げる
  */
 class PageAlreadySavedError extends Error {}
+
+/**
+ * 429 以外の 4xx（キーの誤りなど）は、待ってもう一度叩いても同じ結果になるので、BullMQ がリトライしない UnrecoverableError に包む。
+ * リトライすると FAILED になるまで待ち時間の合計（30 + 60 秒）かかり、5 回/分の枠も使う
+ */
+function toUnrecoverable(error: unknown): UnrecoverableError | undefined {
+  if (!(error instanceof BalldontlieApiError)) return undefined;
+  const { status } = error.info;
+  if (status >= 400 && status < 500 && status !== 429) {
+    return new UnrecoverableError(error.message);
+  }
+  return undefined;
+}
 
 /**
  * 1 シーズン分の試合を balldontlie から取り込む。
@@ -142,10 +155,11 @@ export class IngestionService {
           ? page.nextCursor
           : (await this.prisma.ingestion.findUniqueOrThrow({ where: { id: ingestionId } })).cursor;
       } catch (error) {
-        await (isFinalAttempt
+        const unrecoverable = toUnrecoverable(error);
+        await (isFinalAttempt || unrecoverable
           ? this.markFailed(ingestionId, error)
           : this.markRetrying(ingestionId, error));
-        throw error;
+        throw unrecoverable ?? error;
       }
     }
 

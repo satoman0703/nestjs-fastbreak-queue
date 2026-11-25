@@ -1,5 +1,6 @@
 import { getQueueToken } from '@nestjs/bullmq';
 import { Test, type TestingModule } from '@nestjs/testing';
+import { UnrecoverableError } from 'bullmq';
 import {
   BalldontlieApiClient,
   BalldontlieApiError,
@@ -249,6 +250,55 @@ describe('IngestionService', () => {
         status: 'FAILED',
       });
       expect(queueAdd).not.toHaveBeenCalled();
+    });
+
+    describe('API がエラーを返したとき', () => {
+      const apiError = (status: number) =>
+        new BalldontlieApiError(`HTTP Error: ${status}`, {
+          url: 'https://api.balldontlie.io/v1/games',
+          status,
+          data: '',
+        });
+
+      it('401 は最終試行でなくても FAILED にし、リトライさせないため UnrecoverableError を投げる', async () => {
+        fetchGamesPage.mockRejectedValue(apiError(401));
+        const { id } = await service.create(2015);
+
+        await expect(
+          service.ingestPage({ ingestionId: id, cursor: null }, { isFinalAttempt: false }),
+        ).rejects.toBeInstanceOf(UnrecoverableError);
+
+        const ingestion = await prisma.ingestion.findUniqueOrThrow({ where: { id } });
+        expect(ingestion).toMatchObject({ status: 'FAILED', error: 'HTTP Error: 401' });
+        expect(ingestion.finishedAt).toBeInstanceOf(Date);
+      });
+
+      it('429 は最終試行でなければ PENDING に戻し、リトライさせるため元の例外のまま投げる', async () => {
+        fetchGamesPage.mockRejectedValue(apiError(429));
+        const { id } = await service.create(2015);
+
+        await expect(
+          service.ingestPage({ ingestionId: id, cursor: null }, { isFinalAttempt: false }),
+        ).rejects.toBeInstanceOf(BalldontlieApiError);
+
+        expect(await prisma.ingestion.findUniqueOrThrow({ where: { id } })).toMatchObject({
+          status: 'PENDING',
+          error: 'HTTP Error: 429',
+        });
+      });
+
+      it('500 は最終試行でなければ PENDING に戻し、元の例外のまま投げる', async () => {
+        fetchGamesPage.mockRejectedValue(apiError(500));
+        const { id } = await service.create(2015);
+
+        await expect(
+          service.ingestPage({ ingestionId: id, cursor: null }, { isFinalAttempt: false }),
+        ).rejects.toBeInstanceOf(BalldontlieApiError);
+
+        expect(await prisma.ingestion.findUniqueOrThrow({ where: { id } })).toMatchObject({
+          status: 'PENDING',
+        });
+      });
     });
   });
 });

@@ -15,6 +15,11 @@ const LAST_PAGE_SIZE = 30;
  */
 const FAKE_GAME_ID_BASE = 900_000_000;
 const FAKE_TEAM_IDS = [9001, 9002] as const;
+/**
+ * 指定したページ（1 始まり）で、指定した status を返す。リトライしないエラーや DLQ の計測で、本物を間違ったキーで叩かないために使う
+ */
+const FAIL_PAGE = Number(process.env.FAKE_BDL_FAIL_PAGE ?? 0);
+const FAIL_STATUS = Number(process.env.FAKE_BDL_FAIL_STATUS ?? 401);
 
 const team = (id: number) => ({
   id,
@@ -70,6 +75,11 @@ createServer((req, res) => {
 
   firstRequestAt ??= Date.now();
   const elapsed = ((Date.now() - firstRequestAt) / 1000).toFixed(1).padStart(6);
+  if (page + 1 === FAIL_PAGE) {
+    console.log(`${elapsed}s season=${season} page=${page + 1}/${PAGES} → ${FAIL_STATUS}`);
+    res.writeHead(FAIL_STATUS, { 'Content-Type': 'application/json' }).end('{"error":"fake"}');
+    return;
+  }
   console.log(`${elapsed}s season=${season} page=${page + 1}/${PAGES}`);
 
   res.writeHead(200, { 'Content-Type': 'application/json' });
