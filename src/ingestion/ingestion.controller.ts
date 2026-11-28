@@ -32,6 +32,15 @@ export class IngestionController {
   }
 
   /**
+   * 最後まで失敗して DLQ に入った取り込みを、原因を直した後に失敗したページから続ける
+   */
+  @Post(':id/retry')
+  @HttpCode(202)
+  async retry(@Param('id', ParseUUIDPipe) id: string): Promise<EnqueueIngestionResponse> {
+    return this.ingestionService.retry(id);
+  }
+
+  /**
    * 1 シーズンで約 3 分かかり HTTP がタイムアウトすることを体感するための比較用で、非同期版を作った後も残す
    */
   @Post('sync')

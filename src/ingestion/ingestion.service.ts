@@ -97,6 +97,28 @@ export class IngestionService {
   }
 
   /**
+   * DLQ に入った取り込みを、失敗したページから続ける。保存済みのページは取り直さず、gamesFetched もそのまま引き継ぐ。
+   * 積む cursor は DLQ ではなく DB から取る。ingestPage は DB の cursor とジョブの cursor が違えば保存済みと判断するため。
+   * PENDING に戻してから積む。逆順だと、worker が FAILED のままの行を処理し始めた後で PENDING に上書きしうる。
+   * DLQ のジョブは最後に消す。途中で失敗しても DLQ に残り、もう一度積み直せる
+   */
+  async retry(id: string): Promise<EnqueueIngestionResponse> {
+    const dlqJob = await this.dlq.getJob(id);
+    if (!dlqJob) {
+      throw new NotFoundException(`Ingestion ${id} is not in the dead letter queue`);
+    }
+    const { season, cursor } = await this.prisma.ingestion.findUniqueOrThrow({ where: { id } });
+    await this.assertNotInProgress(season);
+    const { status } = await this.prisma.ingestion.update({
+      where: { id },
+      data: { status: 'PENDING', finishedAt: null },
+    });
+    await this.addPageJob(season, { ingestionId: id, cursor });
+    await dlqJob.remove();
+    return { id, status };
+  }
+
+  /**
    * jobId で add の重複は防げるが、2 回目の POST は 202 を返したまま誰も処理しない行を残すため、行を作る前に断る。
    * ページごとのジョブは jobId が cursor で変わるので、1 件を id で取らず、待ち・実行中・リトライ待ちを全件取って先頭部分で探す。
    * 完了・失敗したジョブは removeOnComplete / removeOnFail で消えるので、見つかればチェーンの途中。

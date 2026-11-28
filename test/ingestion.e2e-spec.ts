@@ -8,7 +8,9 @@ import { App } from 'supertest/types.js';
 import { AppModule } from '@/app.module.js';
 import { setupApp } from '@/app.setup.js';
 import {
+  INGESTION_DLQ,
   INGESTION_QUEUE,
+  type IngestionDlqJobData,
   type IngestionJobData,
   ingestionJobId,
 } from '@/ingestion/ingestion.queue.js';
@@ -19,6 +21,7 @@ describe('/api/ingestions (e2e)', () => {
   let app: INestApplication<App>;
   let prisma: PrismaService;
   let queue: Queue<IngestionJobData>;
+  let dlq: Queue<IngestionDlqJobData>;
 
   beforeAll(async () => {
     const moduleRef = await Test.createTestingModule({
@@ -29,11 +32,13 @@ describe('/api/ingestions (e2e)', () => {
     await app.init();
     prisma = app.get(PrismaService);
     queue = app.get(getQueueToken(INGESTION_QUEUE));
+    dlq = app.get(getQueueToken(INGESTION_DLQ));
   });
 
   beforeEach(async () => {
     await truncateAll(prisma);
     await queue.obliterate({ force: true });
+    await dlq.obliterate({ force: true });
   });
 
   afterEach(() => {
@@ -42,6 +47,7 @@ describe('/api/ingestions (e2e)', () => {
 
   afterAll(async () => {
     await queue.obliterate({ force: true });
+    await dlq.obliterate({ force: true });
     await app.close();
   });
 
@@ -149,6 +155,70 @@ describe('/api/ingestions (e2e)', () => {
 
     it('id が uuid の形でなければ 400 を返す', async () => {
       await request(app.getHttpServer()).get('/api/ingestions/abc').expect(400);
+    });
+  });
+
+  describe('POST /api/ingestions/:id/retry', () => {
+    /** 3 ページ目で失敗して DLQ に入った取り込み */
+    const failedAtPage3 = async () => {
+      const ingestion = await prisma.ingestion.create({
+        data: {
+          season: 2015,
+          status: 'FAILED',
+          gamesFetched: 200,
+          cursor: 200,
+          error: 'HTTP Error: 401',
+          startedAt: new Date('2026-11-25T00:00:00Z'),
+          finishedAt: new Date('2026-11-25T00:00:30Z'),
+        },
+      });
+      await dlq.add(
+        'ingest',
+        { ingestionId: ingestion.id, cursor: 200, error: 'HTTP Error: 401' },
+        { jobId: ingestion.id },
+      );
+      return ingestion;
+    };
+
+    it('失敗したページのジョブを積み直し、PENDING に戻して 202 を返す。DLQ からは消す', async () => {
+      const { id } = await failedAtPage3();
+
+      const res = await request(app.getHttpServer())
+        .post(`/api/ingestions/${id}/retry`)
+        .expect(202);
+
+      expect(res.body).toEqual({ id, status: 'PENDING' });
+      const ingestion = await prisma.ingestion.findUniqueOrThrow({ where: { id } });
+      // 保存済みの 2 ページ分は残し、そこから続ける
+      expect(ingestion).toMatchObject({ status: 'PENDING', gamesFetched: 200, cursor: 200 });
+      expect(ingestion.finishedAt).toBeNull();
+      const jobs = await queue.getWaiting();
+      expect(jobs.map((job) => [job.id, job.data])).toEqual([
+        [ingestionJobId(2015, 200), { ingestionId: id, cursor: 200 }],
+      ]);
+      expect(await dlq.getJob(id)).toBeUndefined();
+    });
+
+    it('DLQ に無ければ 404 を返す', async () => {
+      const { id } = await prisma.ingestion.create({ data: { season: 2015, status: 'COMPLETED' } });
+
+      await request(app.getHttpServer()).post(`/api/ingestions/${id}/retry`).expect(404);
+    });
+
+    it('同じシーズンが取り込み中なら 409 を返し、FAILED のまま DLQ にも残す', async () => {
+      const { id } = await failedAtPage3();
+      await request(app.getHttpServer()).post('/api/ingestions').send({ season: 2015 }).expect(202);
+
+      await request(app.getHttpServer()).post(`/api/ingestions/${id}/retry`).expect(409);
+
+      expect(await prisma.ingestion.findUniqueOrThrow({ where: { id } })).toMatchObject({
+        status: 'FAILED',
+      });
+      expect(await dlq.getJob(id)).toBeDefined();
+    });
+
+    it('id が uuid の形でなければ 400 を返す', async () => {
+      await request(app.getHttpServer()).post('/api/ingestions/abc/retry').expect(400);
     });
   });
 });
